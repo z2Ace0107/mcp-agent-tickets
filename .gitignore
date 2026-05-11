@@ -40,3 +40,12 @@ Thumbs.db
 
 # Pytest
 .pytest_cache/
+
+# Database
+*.db
+
+# ChromaDB
+chroma_data/
+
+# Logs
+logs/

@@ -5,3 +5,6 @@ langchain-openai
 openai
 streamlit
 mcp
+python-dotenv
+chromadb
+ddgs

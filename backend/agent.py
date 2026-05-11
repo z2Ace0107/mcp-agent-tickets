@@ -3,6 +3,7 @@
 
 import json
 import os
+import time
 from datetime import datetime
 from typing import Any
 
@@ -10,8 +11,22 @@ from langchain.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from backend.tools import query_tickets, analyze_tickets
+from backend.tools import (
+    query_tickets,
+    analyze_tickets,
+    update_ticket_status,
+    assign_ticket,
+    add_ticket_reply,
+    get_ticket_detail,
+    search_solutions,
+    recommend_tickets,
+    web_search,
+)
 from backend.prompts import SYSTEM_PROMPT
+from backend.config import get_settings
+from backend.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ============================================================
 # 工具注册
@@ -35,7 +50,66 @@ def analyze_tickets_tool(analysis_type: str) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-TOOLS = [query_tickets_tool, analyze_tickets_tool]
+@tool
+def update_ticket_status_tool(ticket_id: str, new_status: str) -> str:
+    """更新工单状态。ticket_id: 工单编号，必填; new_status: 新状态，必填，可选值：待处理/处理中/已解决/已关闭。"""
+    result = update_ticket_status(ticket_id=ticket_id, new_status=new_status)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@tool
+def assign_ticket_tool(ticket_id: str, assignee: str) -> str:
+    """分配工单给处理人。ticket_id: 工单编号，必填; assignee: 处理人姓名，必填。"""
+    result = assign_ticket(ticket_id=ticket_id, assignee=assignee)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@tool
+def add_ticket_reply_tool(ticket_id: str, content: str) -> str:
+    """为工单添加回复记录。ticket_id: 工单编号，必填; content: 回复内容，必填。"""
+    result = add_ticket_reply(ticket_id=ticket_id, content=content)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@tool
+def get_ticket_detail_tool(ticket_id: str) -> str:
+    """获取工单详情（包含所有回复记录）。ticket_id: 工单编号，必填。"""
+    result = get_ticket_detail(ticket_id=ticket_id)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@tool
+def search_solutions_tool(query: str) -> str:
+    """搜索历史已解决工单中类似问题的解决方案。当用户描述一个问题或故障时，使用此工具检索历史案例。query: 问题描述文本，必填。"""
+    result = search_solutions(query=query)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@tool
+def recommend_tickets_tool() -> str:
+    """智能推荐分析。分析当前工单状态，返回紧急未分配工单（含建议处理人）、积压预警、处理人工作量分布、关联工单群组、以及具体操作建议。当用户询问"建议"、"推荐"、"优先级"、"怎么处理"、"分配建议"时调用。无需参数。"""
+    result = recommend_tickets()
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@tool
+def web_search_tool(query: str) -> str:
+    """联网搜索互联网获取实时信息。当用户询问的信息超出工单系统范围、需要最新资讯、产品或技术问题需要查外部资料时调用。query: 搜索关键词，必填。"""
+    result = web_search(query=query)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+TOOLS = [
+    query_tickets_tool,
+    analyze_tickets_tool,
+    update_ticket_status_tool,
+    assign_ticket_tool,
+    add_ticket_reply_tool,
+    get_ticket_detail_tool,
+    search_solutions_tool,
+    recommend_tickets_tool,
+    web_search_tool,
+]
 _TOOL_MAP = {t.name: t for t in TOOLS}
 
 # ============================================================
@@ -44,12 +118,22 @@ _TOOL_MAP = {t.name: t for t in TOOLS}
 
 def _create_llm() -> ChatOpenAI:
     """创建 DeepSeek LLM 实例（兼容 OpenAI API 格式）。"""
+    settings = get_settings()
+    # api_key 从 os.environ 实时读取，因为 Streamlit 侧边栏可能在运行时动态设置
+    api_key = os.environ.get("DEEPSEEK_API_KEY") or settings.DEEPSEEK_API_KEY
+    if not api_key:
+        raise ValueError(
+            "DEEPSEEK_API_KEY 未设置。请在 Streamlit 侧边栏输入，"
+            "或在 .env 文件中设置 DEEPSEEK_API_KEY=your-key，"
+            "或设置环境变量 DEEPSEEK_API_KEY。"
+        )
     return ChatOpenAI(
-        model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-        api_key=os.getenv("DEEPSEEK_API_KEY", ""),
-        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        temperature=0,
-        max_tokens=4096,
+        model=settings.DEEPSEEK_MODEL,
+        api_key=api_key,
+        base_url=settings.DEEPSEEK_BASE_URL,
+        temperature=settings.LLM_TEMPERATURE,
+        max_tokens=settings.LLM_MAX_TOKENS,
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
 # ============================================================
@@ -151,11 +235,17 @@ def _execute_tool(tool_name: str, tool_args: dict) -> str:
     """执行指定工具并返回结果字符串。"""
     tool_func = _TOOL_MAP.get(tool_name)
     if tool_func is None:
+        logger.warning(f"未知工具调用: {tool_name}")
         return json.dumps({"error": f"未知工具: {tool_name}"}, ensure_ascii=False)
     try:
+        logger.info(f"执行工具: {tool_name}, 参数: {tool_args}")
+        start = time.time()
         result = tool_func.invoke(tool_args)
+        elapsed = time.time() - start
+        logger.info(f"工具 {tool_name} 执行完成，耗时 {elapsed:.2f}s")
         return str(result)
     except Exception as e:
+        logger.error(f"工具 {tool_name} 执行失败: {str(e)}")
         return json.dumps({"error": f"工具执行失败: {str(e)}"}, ensure_ascii=False)
 
 

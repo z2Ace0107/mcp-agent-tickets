@@ -1,17 +1,20 @@
-# 🎫 MCP 智能工单 Agent 系统
+# MCP 智能工单 Agent 系统 v2.0
 
-基于 **MCP 协议** 的标准化 AI Agent 系统，演示如何通过 `llm.bind_tools()` 调用企业工单工具，完成智能查询与统计分析。项目对标企业 AI Agent 开发岗位。
+基于 **MCP 协议** 的企业级 AI Agent 系统，集成 **RAG 知识库**，支持工单查询、分析、操作与智能解决方案推荐。
 
-> **当前版本：v1.0.0 MVP**
+> **v2.0 新增**：SQLite 持久化 · 真 MCP 协议 (stdio) · 7 个工具 · RAG 解决方案检索 · 结构化日志 · 多工具自主编排
 
 ## 功能
 
-| 功能 | 说明 |
-|:---|:---|
-| 🔍 工单查询 | 自然语言输入 → Agent 自动调用 `query_tickets` 工具 |
-| 📊 工单分析 | 类型分布 / 状态统计 / 优先级分布 / 每日趋势 |
-| 🧠 ReAct 推理 | 侧边栏实时展示 Thought → Action → Observation |
-| 💬 多轮对话 | Streamlit 聊天界面，支持上下文连续提问 |
+| 类别 | 工具 | 说明 |
+|:---|:---|:---|
+| 🔍 查询 | `query_tickets` | 按类型/状态/日期筛选工单 |
+| 📊 分析 | `analyze_tickets` | 类型分布 / 状态统计 / 优先级 / 趋势 / 汇总 |
+| ✏️ 操作 | `update_ticket_status` | 更新工单状态 |
+| 👤 分配 | `assign_ticket` | 分配工单给处理人 |
+| 💬 回复 | `add_ticket_reply` | 为工单添加回复记录 |
+| 📋 详情 | `get_ticket_detail` | 查看工单完整信息 + 回复历史 |
+| 🧠 RAG | `search_solutions` | 向量检索历史解决方案，推荐相似案例 |
 
 ## 快速开始
 
@@ -21,29 +24,24 @@
 pip install -r requirements.txt
 ```
 
-### 2. 设置 API Key
+### 2. 配置
 
 ```bash
-# Windows PowerShell
-$env:DEEPSEEK_API_KEY = "your-api-key"
-
-# macOS / Linux
-export DEEPSEEK_API_KEY="your-api-key"
+cp .env.example .env
+# 编辑 .env，填入 DEEPSEEK_API_KEY
 ```
 
 ### 3. 启动
 
 ```bash
-# 前端聊天界面（推荐）
+# 前端聊天界面
 streamlit run frontend/app.py
 
-# MCP 工具服务器
+# MCP 工具服务器（stdio 模式，可接入 Claude Desktop 等客户端）
 python -m backend.mcp_server
 ```
 
-启动后在浏览器打开 http://localhost:8501，侧边栏输入 API Key 即可开始对话。
-
-### Docker 启动
+### Docker
 
 ```bash
 docker build -t mcp-agent-tickets .
@@ -53,17 +51,39 @@ docker run -p 8501:8501 -e DEEPSEEK_API_KEY="your-key" mcp-agent-tickets
 ## 架构
 
 ```
-用户输入 (Streamlit)
-    │
-    ▼
-Agent 核心 (llm.bind_tools + 手动循环)
-    │
-    ├── query_tickets ──→ 模拟工单数据 (17 条)
-    │
-    └── analyze_tickets ──→ 统计分析
-    │
-    ▼
-ReAct 推理可视化 (侧边栏 Thought / Action / Observation)
+用户 → Streamlit 前端
+         │
+         ▼
+    Agent 核心 (llm.bind_tools × 7)
+         │
+         ├─→ tools.py ──→ SQLite (tickets + replies)
+         │
+         ├─→ rag.py ──→ ChromaDB 向量检索
+         │
+         └─→ DeepSeek API (chat + embedding)
+
+    MCP Server (stdio, JSON-RPC 2.0)
+      ← 可接入 Claude Desktop / 其他 MCP 客户端
+```
+
+## 对话示例
+
+```
+用户: APP闪退怎么办？
+Agent: [Thought: 检索历史方案]
+       调用 search_solutions("APP闪退")
+       → 找到 2 条相似工单
+       → "历史案例：1. APP在iOS 18下闪退（高优先级，处理中）
+          2. APP页面加载缓慢（已解决，CDN节点故障）
+
+用户: 把第一个工单分配给张三
+Agent: [Thought: 上一轮提到了 TK20240501002]
+       调用 assign_ticket("TK20240501002", "张三")
+       → 已分配
+
+用户: 给它加一条回复：正在排查iOS兼容性
+Agent: 调用 add_ticket_reply("TK20240501002", "正在排查iOS兼容性")
+       → 回复已添加
 ```
 
 ## 项目结构
@@ -71,31 +91,21 @@ ReAct 推理可视化 (侧边栏 Thought / Action / Observation)
 ```
 mcp-agent-tickets/
 ├── backend/
-│   ├── tools.py         # 工具定义 + 17 条模拟工单
-│   ├── prompts.py       # ReAct 系统提示词
-│   ├── agent.py         # llm.bind_tools() 手动工具调用循环
-│   └── mcp_server.py    # FastAPI MCP 工具服务器
+│   ├── config.py         # .env 配置管理
+│   ├── logger.py         # 结构化日志
+│   ├── database.py       # SQLite CRUD (2 表, 17 条种子数据)
+│   ├── tools.py          # 7 个工具业务函数
+│   ├── prompts.py        # ReAct 系统提示词
+│   ├── agent.py          # llm.bind_tools() 手动循环 (7 工具)
+│   ├── rag.py            # ChromaDB 向量检索 (DeepSeek Embedding)
+│   └── mcp_server.py     # MCP stdio 服务器 (JSON-RPC 2.0)
 ├── frontend/
-│   └── app.py           # Streamlit 聊天界面
-├── docs/                # 设计文档 (PRD / Tech Design / AGENTS)
+│   └── app.py            # Streamlit 聊天界面
+├── docs/                 # PRD / Tech Design / AGENTS
+├── .env.example
 ├── requirements.txt
 ├── Dockerfile
 └── README.md
-```
-
-## 对话示例
-
-```
-用户：最近一周有哪些退款工单？
-Agent：调用 query_tickets(ticket_type="退款", date_range="week")
-       → 返回 3 条工单，列出标题和状态
-
-用户：帮我分析一下工单的状态分布
-Agent：调用 analyze_tickets(analysis_type="status_distribution")
-       → 待处理 6 条 (35.3%) / 处理中 5 条 (29.4%) / ...
-
-用户：你好
-Agent：不调用任何工具，直接回复问候语
 ```
 
 ## 技术栈
@@ -105,8 +115,12 @@ Agent：不调用任何工具，直接回复问候语
 | 前端 | Streamlit |
 | Agent | LangChain + llm.bind_tools() |
 | LLM | DeepSeek API (deepseek-v4-flash) |
-| 工具服务 | FastAPI + MCP 协议 |
-| 部署 | Docker |
+| Embedding | DeepSeek API (text-embedding-3-small) |
+| 向量库 | ChromaDB |
+| 数据库 | SQLite |
+| 协议 | MCP (JSON-RPC 2.0 over stdio) |
+| 日志 | Python logging |
+| 部署 | Docker (多阶段构建) |
 
 ## 许可证
 
