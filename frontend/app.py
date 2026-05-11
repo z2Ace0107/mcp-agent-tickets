@@ -1,15 +1,259 @@
 # -*- coding: utf-8 -*-
-"""Streamlit 聊天界面 — 对话交互 + ReAct 推理过程可视化"""
+"""Streamlit 前端 — v2.0 深色主题"""
 
 import asyncio
+import json
 import os
 import sys
+import time
+from datetime import datetime
 
-# 确保项目根目录在 sys.path 中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
+from backend import init_app
 from backend.agent import run_agent
+from backend.config import get_settings
+
+# ============================================================
+# 常量
+# ============================================================
+
+TOOL_CN_MAP = {
+    "query_tickets_tool":       "工单查询",
+    "analyze_tickets_tool":     "工单分析",
+    "update_ticket_status_tool":"更新状态",
+    "assign_ticket_tool":       "分配处理人",
+    "add_ticket_reply_tool":    "添加回复",
+    "get_ticket_detail_tool":   "工单详情",
+    "search_solutions_tool":    "检索方案",
+    "recommend_tickets_tool":   "智能推荐",
+    "web_search_tool":          "联网搜索",
+}
+
+DEMO_SCENARIOS = {
+    "— 演示场景 —": "",
+    "今日工单概览":            "帮我查看今天所有工单的概况，并给出类型和状态分布",
+    "智能推荐分析":            "帮我分析当前工单的优先级和紧急程度，给出处理建议和分配方案",
+    "处理紧急设备故障":        "帮我找到所有待处理的紧急设备故障工单，分析影响的产线和建议处理方案",
+    "质量异常追溯":            "查看最近一周的质量异常工单，分析根因和改进措施",
+    "检索历史解决方案":        "曲轴淬火后变形率超标怎么办？有没有类似案例可以参考？",
+    "生成工单处理报告":        "帮我生成一份今天的工单综合处理报告",
+}
+
+QUICK_ACTIONS = [
+    ("📋 今日概览",   "帮我查看今天所有工单的概况，并给出类型和状态分布"),
+    ("💡 智能推荐",   "帮我分析当前工单的优先级，给出处理建议和分配方案"),
+    ("⚠️ 紧急工单",   "查看所有紧急和高优先级的未处理工单"),
+    ("🔧 设备故障",   "查看最近一周的所有设备故障工单"),
+    ("📊 统计报告",   "帮我生成一份今天的工单综合处理报告"),
+]
+
+# ============================================================
+# CSS
+# ============================================================
+
+CUSTOM_CSS = """
+<style>
+/* =============================================================
+   DeepSeek 极简风格 — v2.1
+   设计语言：轻盈、透气、聚焦内容
+   ============================================================= */
+
+/* === 全局背景 === */
+.stApp { background: #1b1c21 !important; }
+.main .block-container {
+    padding: 1.5rem 2.5rem 1rem 2.5rem;
+    max-width: 820px !important;
+}
+header[data-testid="stHeader"] { background: transparent !important; }
+
+/* === 顶部标题 === */
+.app-title {
+    font-size: 1.05rem; font-weight: 500; letter-spacing: -0.01em;
+    color: #ECECEC; display: flex; align-items: center; gap: 7px;
+}
+.app-title .badge {
+    font-size: 0.65rem; font-weight: 400; color: #8B8B8B;
+    background: rgba(255,255,255,0.06); padding: 1px 7px; border-radius: 8px;
+}
+.app-subtitle {
+    font-size: 0.72rem; color: #8B8B8B; margin-top: 1px; font-weight: 400;
+}
+
+/* === 连接状态 === */
+.status-tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.75rem; padding: 2px 9px; border-radius: 10px; font-weight: 400;
+}
+.status-tag.online  { color: #4ADE80; background: rgba(74,222,128,0.08); }
+.status-tag.offline { color: #8B8B8B; background: rgba(255,255,255,0.04); }
+.status-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+.status-dot.online  { background: #4ADE80; }
+.status-dot.offline { background: #6B7280; }
+
+/* === 统计卡片 — 幽灵卡片风格 === */
+.stat-card {
+    border-radius: 8px; padding: 0.9rem 1rem 0.85rem 1.1rem;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.02);
+    transition: border-color 0.15s, background 0.15s;
+}
+.stat-card:hover {
+    border-color: rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04);
+}
+.stat-value {
+    font-size: 1.45rem; font-weight: 600; line-height: 1.15;
+    letter-spacing: -0.01em;
+}
+.stat-card.blue  .stat-value { color: #4D6BFE; }
+.stat-card.amber .stat-value { color: #F59E0B; }
+.stat-card.green .stat-value { color: #4ADE80; }
+.stat-card.red   .stat-value { color: #EF4444; }
+.stat-label {
+    font-size: 0.7rem; color: #8B8B8B; margin-top: 2px; font-weight: 400;
+}
+
+/* === 全局按钮重置 === */
+[data-testid="stButton"] button {
+    border-radius: 6px !important; font-weight: 400 !important;
+    transition: all 0.15s !important; font-size: 0.81rem !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    background: transparent !important; color: #D1D1D1 !important;
+}
+[data-testid="stButton"] button:hover {
+    background: rgba(255,255,255,0.06) !important;
+    border-color: rgba(255,255,255,0.14) !important; color: #ECECEC !important;
+}
+[data-testid="stButton"] button:active {
+    background: rgba(255,255,255,0.10) !important; transform: scale(0.98) !important;
+}
+
+/* === 聊天气泡 === */
+[data-testid="stChatMessage"] {
+    border-radius: 10px !important; margin-bottom: 6px !important;
+    padding: 0.15rem 0 !important; background: transparent !important;
+}
+[data-testid="stChatMessage"] p { line-height: 1.65; font-size: 0.875rem; }
+
+/* === 聊天输入框 === */
+[data-testid="stChatInput"] {
+    padding: 0.5rem 0 1rem 0 !important;
+}
+[data-testid="stChatInput"] textarea {
+    border-radius: 10px !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
+    background: rgba(255,255,255,0.03) !important;
+    font-size: 0.875rem !important; min-height: 52px !important;
+    color: #ECECEC !important;
+}
+[data-testid="stChatInput"] textarea::placeholder { color: #6B7280 !important; }
+[data-testid="stChatInput"] textarea:focus {
+    border-color: rgba(255,255,255,0.18) !important;
+    box-shadow: 0 0 0 2px rgba(77,107,254,0.12) !important;
+}
+
+/* === 侧边栏 === */
+section[data-testid="stSidebar"] {
+    background: #1b1c21 !important;
+    border-right: 1px solid rgba(255,255,255,0.06) !important;
+}
+section[data-testid="stSidebar"] .block-container {
+    padding: 1rem 0.75rem 0 0.75rem;
+}
+.section-label {
+    font-size: 0.65rem; font-weight: 500; color: #6B7280;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin: 0.85rem 0 0.3rem;
+}
+
+/* === 对话历史条目 === */
+/* 标题按钮 — 单行截断 */
+section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] [data-testid="stButton"] button {
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-size: 0.76rem !important;
+    justify-content: flex-start !important; padding: 4px 8px !important;
+    border: none !important; background: transparent !important;
+    border-radius: 5px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] [data-testid="stButton"] button:hover {
+    background: rgba(255,255,255,0.05) !important;
+}
+/* ⋯ 菜单按钮 — 低可见度，hover 才明显 */
+section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] [data-testid="stColumn"]:last-child [data-testid="stButton"] button {
+    opacity: 0.30 !important; transition: opacity 0.15s !important;
+    font-size: 0.85rem !important; padding: 2px 4px !important;
+    min-width: unset !important; border: none !important;
+    background: transparent !important; color: #8B8B8B !important;
+}
+section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] [data-testid="stColumn"]:last-child [data-testid="stButton"] button:hover {
+    opacity: 1.0 !important; color: #ECECEC !important;
+    background: rgba(255,255,255,0.08) !important;
+}
+
+/* 侧边栏 caption（时间分组标题）*/
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    font-size: 0.7rem; color: #6B7280; font-weight: 400;
+}
+
+/* 提醒 — 内联轻量徽标 */
+.alert-badge {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 0.73rem; padding: 4px 7px; border-radius: 5px;
+    margin-bottom: 2px; font-weight: 400;
+}
+.alert-badge.danger  { color: #FCA5A5; background: rgba(239,68,68,0.08); }
+.alert-badge.warning { color: #FCD34D; background: rgba(245,158,11,0.08); }
+.alert-badge.info   { color: #93C5FD; background: rgba(59,130,246,0.08); }
+.alert-badge .dot {
+    width: 4px; height: 4px; border-radius: 50%; flex-shrink: 0;
+}
+.alert-badge.danger .dot  { background: #EF4444; }
+.alert-badge.warning .dot { background: #F59E0B; }
+.alert-badge.info .dot   { background: #4D6BFE; }
+
+/* === 弹出面板 === */
+[data-testid="stPopover"] {
+    min-width: 200px !important;
+    border-radius: 8px !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+}
+
+/* === 输入框 === */
+input[type="text"], input[type="password"], textarea {
+    border-radius: 6px !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    background: rgba(255,255,255,0.03) !important;
+    color: #ECECEC !important; font-size: 0.81rem !important;
+}
+
+/* === 分割线 === */
+hr { border-color: rgba(255,255,255,0.06) !important; margin: 0.5rem 0 !important; }
+
+/* === 展开器（ReAct 推理过程）=== */
+[data-testid="stExpander"] details {
+    border: 1px solid rgba(255,255,255,0.06); border-radius: 8px;
+}
+[data-testid="stExpander"] summary {
+    color: #8B8B8B; font-size: 0.8rem; font-weight: 400;
+}
+
+/* === 通知 === */
+[data-testid="stNotification"] {
+    border-radius: 8px !important;
+}
+
+/* === 无数据占位 === */
+.empty-hint { color: #6B7280; font-size: 0.75rem; padding: 0.2rem 0; font-weight: 400; }
+
+/* === Scrollbar === */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+</style>
+"""
 
 # ============================================================
 # 页面配置
@@ -22,103 +266,566 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.title("🎫 MCP智能工单助手")
-st.caption("基于 ReAct Agent 的工单查询与分析系统")
-
 # ============================================================
-# 会话状态初始化
+# 初始化
 # ============================================================
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []  # [{"role": "user/assistant", "content": str}]
+if "app_initialized" not in st.session_state:
+    with st.spinner("正在初始化系统..."):
+        init_app()
+    st.session_state.app_initialized = True
 
-if "step_history" not in st.session_state:
-    st.session_state.step_history = []  # 每次对话的 intermediate_steps 快照
+settings = get_settings()
+api_key = os.environ.get("DEEPSEEK_API_KEY") or settings.DEEPSEEK_API_KEY
+HAS_API_KEY = bool(api_key)
+if HAS_API_KEY:
+    os.environ["DEEPSEEK_API_KEY"] = api_key
 
 # ============================================================
-# 侧边栏 — ReAct 推理过程
+# 会话状态
+# ============================================================
+
+st.session_state.setdefault("chat_history", [])
+st.session_state.setdefault("pending_prompt", None)
+st.session_state.setdefault("note_target", None)
+st.session_state.setdefault("export_target", None)
+st.session_state.setdefault("api_key_set", HAS_API_KEY)
+st.session_state.setdefault("show_timestamps", True)
+st.session_state.setdefault("auto_expand_react", False)
+st.session_state.setdefault("current_conversation_id", None)
+st.session_state.setdefault("_saved_msg_count", 0)
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# ============================================================
+# 工具函数
+# ============================================================
+
+def fetch_ticket_stats():
+    from backend.database import get_connection
+    conn = get_connection()
+    try:
+        total   = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
+        pending = conn.execute("SELECT COUNT(*) FROM tickets WHERE status='待处理'").fetchone()[0]
+        process = conn.execute("SELECT COUNT(*) FROM tickets WHERE status='处理中'").fetchone()[0]
+        urgent  = conn.execute(
+            "SELECT COUNT(*) FROM tickets WHERE priority IN ('紧急','高') AND status IN ('待处理','处理中')"
+        ).fetchone()[0]
+        today_count = conn.execute(
+            "SELECT COUNT(*) FROM tickets WHERE created_at = ?",
+            (datetime.now().strftime("%Y-%m-%d"),)
+        ).fetchone()[0]
+        # 最紧急工单标题用于提醒
+        top_urgent = conn.execute(
+            "SELECT ticket_id, title FROM tickets WHERE priority IN ('紧急','高') "
+            "AND status IN ('待处理','处理中') ORDER BY "
+            "CASE priority WHEN '紧急' THEN 0 ELSE 1 END, created_at DESC LIMIT 1"
+        ).fetchone()
+        return {"total": total, "pending": pending, "processing": process,
+                "urgent": urgent, "today": today_count,
+                "top_urgent_id": top_urgent["ticket_id"] if top_urgent else None,
+                "top_urgent_title": top_urgent["title"] if top_urgent else None}
+    finally:
+        conn.close()
+
+
+def render_reAct_steps(steps: list[dict]):
+    if not steps:
+        return
+    expanded = st.session_state.get("auto_expand_react", False)
+    with st.expander(f"推理过程（{len(steps)} 步）", expanded=expanded):
+        for si, step in enumerate(steps, 1):
+            tool_name = step.get("action", "unknown")
+            tool_cn = TOOL_CN_MAP.get(tool_name, tool_name)
+            st.markdown(f"**步骤 {si}** — {tool_cn}")
+            thought = step.get("thought", "")
+            if thought:
+                st.markdown(f"*{thought[:300]}*")
+            try:
+                args_str = step.get("action_input", "{}")
+                args_parsed = json.loads(args_str) if isinstance(args_str, str) else args_str
+                st.code(json.dumps(args_parsed, ensure_ascii=False, indent=2), language="json")
+            except Exception:
+                st.text(str(step.get("action_input", ""))[:500])
+            obs = str(step.get("observation", ""))
+            if len(obs) > 600:
+                st.caption(f"数据较长（{len(obs)} 字符），仅显示前 600 字符：")
+                st.code(obs[:600], language="json")
+            elif obs:
+                st.code(obs, language="json")
+            if si < len(steps):
+                st.divider()
+
+
+def save_current_conversation():
+    if not st.session_state.chat_history:
+        return
+    from backend.database import create_conversation, save_message, update_conversation_title
+    conv_id = st.session_state.current_conversation_id
+    saved_count = st.session_state.get("_saved_msg_count", 0)
+    new_msgs = st.session_state.chat_history[saved_count:]
+    if not new_msgs:
+        return
+    if conv_id is None:
+        first_user = next(
+            (m["content"] for m in st.session_state.chat_history if m["role"] == "user"),
+            "新对话",
+        )
+        title = first_user[:50] + ("..." if len(first_user) > 50 else "")
+        conv_id = create_conversation(title)
+        st.session_state.current_conversation_id = conv_id
+    for msg in new_msgs:
+        steps_json = json.dumps(msg.get("steps", []), ensure_ascii=False)
+        save_message(conv_id, msg["role"], msg["content"], steps_json)
+    st.session_state._saved_msg_count = len(st.session_state.chat_history)
+    # 用第一条用户消息更新标题
+    first_user = next(
+        (m["content"] for m in st.session_state.chat_history if m["role"] == "user"),
+        "新对话",
+    )
+    title = first_user[:50] + ("..." if len(first_user) > 50 else "")
+    update_conversation_title(conv_id, title)
+
+
+def load_conversation_history(conv_id: int) -> bool:
+    from backend.database import load_conversation
+    conv = load_conversation(conv_id)
+    if not conv:
+        return False
+    st.session_state.chat_history = conv["messages"]
+    st.session_state.current_conversation_id = conv_id
+    st.session_state._saved_msg_count = len(conv["messages"])
+    return True
+
+
+def start_new_conversation():
+    st.session_state.chat_history = []
+    st.session_state.current_conversation_id = None
+    st.session_state._saved_msg_count = 0
+
+
+def _generate_short_title(text: str) -> str | None:
+    """调用 LLM 生成不超过 15 字的短标题。失败返回 None。"""
+    try:
+        from openai import OpenAI
+        settings = get_settings()
+        api_key = os.environ.get("DEEPSEEK_API_KEY") or settings.DEEPSEEK_API_KEY
+        if not api_key:
+            return None
+        client = OpenAI(api_key=api_key, base_url=settings.DEEPSEEK_BASE_URL)
+        resp = client.chat.completions.create(
+            model=settings.DEEPSEEK_MODEL,
+            messages=[{
+                "role": "user",
+                "content": f"将以下对话内容总结为不超过15个字的标题，只输出标题本身，不要加引号或任何额外文字：\n\n{text}",
+            }],
+            max_tokens=32,
+            temperature=0,
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+        result = resp.choices[0].message.content.strip()
+        result = result.replace('"', '').replace('《', '').replace('》', '').replace('「', '').replace('」', '')
+        return result[:15]
+    except Exception:
+        return None
+
+
+# ============================================================
+# 顶部栏
+# ============================================================
+
+stats = fetch_ticket_stats()
+
+# 单行顶部：标题 + 状态
+tl, tr = st.columns([6, 1])
+with tl:
+    st.markdown(
+        '<div class="app-title">'
+        '🎫 MCP 智能工单助手'
+        '<span class="badge">v2.0</span>'
+        '</div>'
+        '<div class="app-subtitle">企业工单管理与智能分析</div>',
+        unsafe_allow_html=True,
+    )
+with tr:
+    if HAS_API_KEY:
+        st.markdown(
+            '<div style="display:flex;align-items:center;justify-content:flex-end;padding-top:4px;">'
+            '<span class="status-tag online"><span class="status-dot online"></span>已连接</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="display:flex;align-items:center;justify-content:flex-end;padding-top:4px;">'
+            '<span class="status-tag offline"><span class="status-dot offline"></span>未连接</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+# ============================================================
+# 统计卡片
+# ============================================================
+
+c1, c2, c3, c4 = st.columns(4)
+cards = [
+    ("blue",  stats["total"],      "工单总数"),
+    ("amber", stats["pending"],    "待处理"),
+    ("green", stats["processing"], "处理中"),
+    ("red",   stats["urgent"],     "紧急工单"),
+]
+for col, (color, val, label) in zip([c1, c2, c3, c4], cards):
+    with col:
+        st.markdown(
+            f'<div class="stat-card {color}">'
+            f'<div class="stat-value">{val}</div>'
+            f'<div class="stat-label">{label}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+# ============================================================
+# 侧边栏
 # ============================================================
 
 with st.sidebar:
-    st.header("🧠 ReAct 推理过程")
-
-    api_key = st.text_input(
-        "DeepSeek API Key",
-        type="password",
-        value=os.getenv("DEEPSEEK_API_KEY", ""),
-        help="输入 DeepSeek API Key，或设置环境变量 DEEPSEEK_API_KEY",
+    # 快捷查工单
+    st.markdown('<div class="section-label">快捷查工单</div>', unsafe_allow_html=True)
+    def _on_quick_ticket():
+        val = st.session_state.get("_quick_ticket_input", "").strip()
+        if val:
+            st.session_state.pending_prompt = f"查看工单 {val} 的详细信息"
+            st.session_state._quick_ticket_input = ""
+    st.text_input(
+        "工单编号", placeholder="TK20240501001...",
+        label_visibility="collapsed", key="_quick_ticket_input",
+        on_change=_on_quick_ticket,
     )
-    if api_key:
-        os.environ["DEEPSEEK_API_KEY"] = api_key
 
-    st.divider()
-
-    if st.session_state.step_history:
-        # 显示最近一次对话的步骤
-        latest_steps = st.session_state.step_history[-1]
-        if latest_steps:
-            for idx, step in enumerate(latest_steps, 1):
-                with st.expander(f"步骤 {idx}: {step.get('action', '思考')}", expanded=(idx == 1)):
-                    st.markdown(f"**💭 Thought**\n\n{step.get('thought', '')}")
-                    st.markdown(f"**🔧 Action**\n\n`{step.get('action', '')}`")
-                    st.markdown(f"**📥 Action Input**\n\n```json\n{step.get('action_input', '')}\n```")
-                    obs = step.get("observation", "")
-                    st.markdown(f"**📤 Observation**\n\n```json\n{obs[:500]}{'...' if len(obs) > 500 else ''}\n```")
+    # 智能提醒
+    st.markdown('<div class="section-label">提醒</div>', unsafe_allow_html=True)
+    alerts = []
+    if stats["urgent"] > 0:
+        tid = stats.get("top_urgent_id", "")
+        ttl = stats.get("top_urgent_title", "")
+        alerts.append(("danger", f'{stats["urgent"]} 个紧急工单待处理\n{tid}: {ttl[:30]}...'))
+    if stats["pending"] > 5:
+        alerts.append(("warning", f'待处理工单积压（{stats["pending"]} 个）'))
+    if stats["today"] > 0:
+        alerts.append(("info", f'今日新增 {stats["today"]} 个工单'))
+    if alerts:
+        for cls, text in alerts:
+            st.markdown(
+                f'<div class="alert-badge {cls}"><span class="dot"></span>{text}</div>',
+                unsafe_allow_html=True,
+            )
     else:
-        st.info("发送消息后，Agent 的推理步骤将在此展示")
+        st.markdown('<div class="empty-hint">暂无提醒</div>', unsafe_allow_html=True)
+
+    # 演示模式
+    st.markdown('<div class="section-label">演示</div>', unsafe_allow_html=True)
+    def _on_demo_change():
+        val = st.session_state.get("_demo_select", "")
+        if val != "— 演示场景 —":
+            st.session_state.pending_prompt = DEMO_SCENARIOS[val]
+            st.session_state._demo_select = "— 演示场景 —"
+    st.selectbox(
+        "场景", list(DEMO_SCENARIOS.keys()), label_visibility="collapsed",
+        key="_demo_select", on_change=_on_demo_change,
+    )
+
+    # 对话历史
+    st.markdown('<div class="section-label">对话历史</div>', unsafe_allow_html=True)
+
+    if st.button("＋ 新对话", use_container_width=True):
+        start_new_conversation()
+        st.rerun()
+
+    from backend.database import (
+        list_conversations_grouped, delete_conversation,
+        pin_conversation, unpin_conversation, update_conversation_title,
+    )
+    groups = list_conversations_grouped(limit=50)
+    has_any = any(v for v in groups.values())
+
+    if has_any:
+        for group_name, convs in groups.items():
+            if not convs:
+                continue
+            st.caption(group_name)
+            for conv in convs:
+                cid = conv["id"]
+                title = conv["title"]
+                preview = conv.get("preview", "")
+                is_current = (cid == st.session_state.current_conversation_id)
+                is_pinned = conv.get("pinned", False)
+
+                # 截断过长标题
+                short_title = title if len(title) <= 20 else title[:19] + "…"
+                menu_key = f"_menu_open_{cid}"
+
+                c_title, c_menu = st.columns([10, 1])
+                with c_title:
+                    label = f"▸ {short_title}" if is_current else short_title
+                    btn_type = "primary" if is_current else "secondary"
+                    if st.button(
+                        label, key=f"h_{cid}", use_container_width=True,
+                        help=title + ("\n" + preview if preview else ""),
+                        type=btn_type,
+                    ):
+                        load_conversation_history(cid)
+                        st.rerun()
+                with c_menu:
+                    if st.button("⋯", key=f"menu_{cid}", use_container_width=True):
+                        st.session_state[menu_key] = not st.session_state.get(menu_key, False)
+                        st.rerun()
+
+                # 内联菜单
+                if st.session_state.get(menu_key, False):
+                    st.caption(f"**{title[:30]}{'...' if len(title)>30 else ''}**")
+
+                    a1, a2, a3, a4, a5 = st.columns(5)
+                    with a1:
+                        if st.button("🤖", help="AI 生成短标题", key=f"ai_{cid}", use_container_width=True):
+                            try:
+                                short = _generate_short_title(title)
+                                if short:
+                                    update_conversation_title(cid, short)
+                                    st.session_state[menu_key] = False
+                                    st.rerun()
+                            except Exception:
+                                st.toast("AI 总结失败，请手动重命名")
+                    with a2:
+                        if st.button("✏️", help="重命名", key=f"rn_{cid}", use_container_width=True):
+                            st.session_state[f"_rename_{cid}"] = True
+                    with a3:
+                        if is_pinned:
+                            if st.button("📌", help="取消置顶", key=f"up_{cid}", use_container_width=True):
+                                unpin_conversation(cid)
+                                st.session_state[menu_key] = False
+                                st.rerun()
+                        else:
+                            if st.button("📌", help="置顶", key=f"p_{cid}", use_container_width=True):
+                                pin_conversation(cid)
+                                st.session_state[menu_key] = False
+                                st.rerun()
+                    with a4:
+                        if st.button("🗑", help="删除对话", key=f"hd_{cid}", use_container_width=True):
+                            delete_conversation(cid)
+                            if is_current:
+                                start_new_conversation()
+                            st.session_state[menu_key] = False
+                            st.rerun()
+                    with a5:
+                        if st.button("✕", help="关闭菜单", key=f"close_{cid}", use_container_width=True):
+                            st.session_state[menu_key] = False
+                            st.rerun()
+
+                    # 重命名输入框
+                    if st.session_state.get(f"_rename_{cid}"):
+                        new_name = st.text_input(
+                            "新标题", value=title, key=f"rn_input_{cid}",
+                            label_visibility="collapsed",
+                        )
+                        rc1, rc2 = st.columns([1, 3])
+                        with rc1:
+                            if st.button("确认", key=f"rn_ok_{cid}", use_container_width=True):
+                                if new_name and new_name != title:
+                                    update_conversation_title(cid, new_name)
+                                st.session_state[f"_rename_{cid}"] = False
+                                st.session_state[menu_key] = False
+                                st.rerun()
+                        with rc2:
+                            if st.button("取消", key=f"rn_cancel_{cid}", use_container_width=True):
+                                st.session_state[f"_rename_{cid}"] = False
+                                st.rerun()
+    else:
+        st.markdown('<div class="empty-hint">暂无对话</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-label">设置</div>', unsafe_allow_html=True)
+    st.toggle("时间戳", key="show_timestamps")
+    st.toggle("展开推理", key="auto_expand_react")
+
+    if not HAS_API_KEY:
+        api_input = st.text_input(
+            "API Key", type="password", placeholder="sk-...", label_visibility="collapsed",
+        )
+        if api_input:
+            os.environ["DEEPSEEK_API_KEY"] = api_input
+            st.session_state.api_key_set = True
+            st.rerun()
+
+    with st.popover("⚙️ 数据管理", use_container_width=True):
+        if st.button("🔄 重置数据", use_container_width=True):
+            import sqlite3
+            from backend.database import init_db as reinit_db
+            conn = sqlite3.connect(settings.DATABASE_PATH)
+            conn.execute("DELETE FROM ticket_replies")
+            conn.execute("DELETE FROM tickets")
+            conn.execute("DELETE FROM conversations")
+            conn.execute("DELETE FROM conversation_messages")
+            conn.commit()
+            conn.close()
+            reinit_db()
+            start_new_conversation()
+            st.success("已重置")
+            time.sleep(0.5)
+            st.rerun()
+        if st.button("🗑️ 清空历史", use_container_width=True):
+            start_new_conversation()
+            st.rerun()
+        st.caption(f"模型: {settings.DEEPSEEK_MODEL}")
 
 # ============================================================
-# 主区域 — 聊天界面
+# 快捷操作行
 # ============================================================
 
-# 渲染历史消息
-for msg in st.session_state.chat_history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+btn_cols = st.columns(len(QUICK_ACTIONS))
+for i, (label, prompt) in enumerate(QUICK_ACTIONS):
+    with btn_cols[i]:
+        if st.button(label, use_container_width=True, key=f"qb_{i}"):
+            st.session_state.pending_prompt = prompt
+            st.rerun()
 
-# 输入框
-if prompt := st.chat_input("输入你的问题，例如：最近一周有哪些退款工单？"):
-    # 显示用户消息
+# ============================================================
+# 聊天历史
+# ============================================================
+
+for idx, msg in enumerate(st.session_state.chat_history):
+    role = msg.get("role", "user")
+    content = msg.get("content", "")
+    msg_time = msg.get("time", "")
+
+    with st.chat_message(role):
+        st.markdown(content)
+        if st.session_state.show_timestamps and msg_time:
+            st.caption(msg_time)
+
+        if role == "assistant":
+            # 操作按钮行
+            ac1, ac2, ac3, ac4 = st.columns([1, 1, 1, 9])
+            with ac1:
+                if st.button("📋 复制", key=f"c_{idx}", use_container_width=True):
+                    st.session_state[f"_clip_{idx}"] = content
+            with ac2:
+                if st.button("📥 导出", key=f"e_{idx}", use_container_width=True):
+                    st.session_state.export_target = {"content": content, "time": msg_time}
+                    st.rerun()
+            with ac3:
+                if st.button("📝 备注", key=f"n_{idx}", use_container_width=True):
+                    st.session_state.note_target = content
+                    st.rerun()
+
+            if st.session_state.get(f"_clip_{idx}"):
+                st.code(content, language="markdown")
+                st.caption("已复制到剪贴板区域，可手动选取")
+                if st.button("✕ 关闭", key=f"cx_{idx}"):
+                    del st.session_state[f"_clip_{idx}"]
+                    st.rerun()
+
+            render_reAct_steps(msg.get("steps", []))
+
+# ============================================================
+# 备注弹窗
+# ============================================================
+
+if st.session_state.note_target:
+    st.markdown("---")
+    st.markdown("##### 📝 备注到工单")
+    nc1, nc2 = st.columns([3, 1])
+    with nc1:
+        tid = st.text_input("工单编号", placeholder="TK20240501001", key="note_tid")
+        ntxt = st.text_area("内容", value=st.session_state.note_target, height=100, key="note_txt")
+    with nc2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("✅ 确认", use_container_width=True):
+            from backend.tools import add_ticket_reply
+            result = add_ticket_reply(ticket_id=tid, content=ntxt)
+            if result.get("success"):
+                st.success(f"已备注到 {tid}")
+            else:
+                st.error(result.get("error", "失败"))
+            st.session_state.note_target = None
+            time.sleep(0.5)
+            st.rerun()
+        if st.button("取消", use_container_width=True):
+            st.session_state.note_target = None
+            st.rerun()
+
+# ============================================================
+# 导出弹窗
+# ============================================================
+
+if st.session_state.export_target:
+    exp = st.session_state.export_target
+    md_text = f"# 工单助手对话\n\n**{exp['time']}**\n\n---\n\n{exp['content']}"
+    st.markdown("---")
+    st.markdown("##### 📥 导出")
+    st.code(md_text, language="markdown")
+    dc1, dc2 = st.columns([1, 4])
+    with dc1:
+        st.download_button(
+            "⬇ 下载 Markdown",
+            data=md_text,
+            file_name=f"ticket_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+            mime="text/markdown",
+        )
+    with dc2:
+        if st.button("关闭"):
+            st.session_state.export_target = None
+            st.rerun()
+
+# ============================================================
+# 聊天输入 + Agent
+# ============================================================
+
+prompt = None
+
+if st.session_state.pending_prompt:
+    prompt = st.session_state.pending_prompt
+    st.session_state.pending_prompt = None
+
+if not prompt:
+    prompt = st.chat_input("输入问题，例如：最近一周有哪些退款工单？")
+
+if prompt:
+    now_str = datetime.now().strftime("%m-%d %H:%M")
+
     with st.chat_message("user"):
         st.markdown(prompt)
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
+        st.caption(now_str)
 
-    # 确保 API Key 已设置
-    if not os.getenv("DEEPSEEK_API_KEY"):
-        response_text = "⚠️ 请先在侧边栏输入 DeepSeek API Key。"
+    if not HAS_API_KEY and not st.session_state.api_key_set:
+        response_text = "请点击 ⚙️ 设置输入 DeepSeek API Key。"
         steps = []
     else:
-        with st.spinner("Agent 思考中..."):
+        with st.spinner("思考中..."):
             try:
-                result = asyncio.run(
-                    run_agent(
-                        user_input=prompt,
-                        chat_history=st.session_state.chat_history[:-1],
-                    )
-                )
+                result = asyncio.run(run_agent(
+                    user_input=prompt,
+                    chat_history=[
+                        {"role": m["role"], "content": m["content"]}
+                        for m in st.session_state.chat_history
+                    ],
+                ))
                 response_text = result["output"]
                 steps = result["intermediate_steps"]
             except Exception as e:
-                response_text = f"❌ Agent 执行出错：{str(e)}"
+                response_text = f"执行出错：{str(e)}"
                 steps = []
 
-    # 显示助手回复
+    now_assist = datetime.now().strftime("%m-%d %H:%M")
+
     with st.chat_message("assistant"):
         st.markdown(response_text)
-    st.session_state.chat_history.append({"role": "assistant", "content": response_text})
+        st.caption(now_assist)
+        render_reAct_steps(steps)
 
-    # 保存步骤供侧边栏展示
-    st.session_state.step_history.append(steps)
+    st.session_state.chat_history.append({
+        "role": "user", "content": prompt, "time": now_str, "steps": [],
+    })
+    st.session_state.chat_history.append({
+        "role": "assistant", "content": response_text, "time": now_assist, "steps": steps,
+    })
 
-    # 仅在确实无工具调用时补充占位步骤
-    if not steps and os.getenv("DEEPSEEK_API_KEY"):
-        # 如果 output 仍包含 ReAct 标记，说明 Agent 解析失败，不伪装成"无需工具"
-        if "Action:" not in response_text and "Thought:" not in response_text:
-            st.session_state.step_history[-1] = [{
-                "thought": "用户输入无需调用工具，直接回复。",
-                "action": "无（Final Answer）",
-                "action_input": "{}",
-                "observation": response_text[:500],
-            }]
-
+    save_current_conversation()
     st.rerun()
