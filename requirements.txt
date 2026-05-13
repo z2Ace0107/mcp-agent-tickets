@@ -8,3 +8,5 @@ mcp
 python-dotenv
 chromadb
 ddgs
+schedule
+pydantic-settings

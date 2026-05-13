@@ -80,42 +80,45 @@ def _test_database_queries():
     print(f"   总工单数: {result['total']}")
     assert result["total"] >= 17, f"FAIL: 总工单数应 >= 17, 实际 {result['total']}"
 
-    # 3. get_ticket_detail
-    print("\n3. get_ticket_detail(ticket_id='TK20240501001')")
-    result = get_ticket_detail("TK20240501001")
+    # 3. get_ticket_detail — 使用种子数据中实际存在的工单编号
+    TEST_TICKET = "WO-20260428-001"
+    print(f"\n3. get_ticket_detail(ticket_id='{TEST_TICKET}')")
+    result = get_ticket_detail(TEST_TICKET)
     assert "error" not in result, f"FAIL: {result.get('error')}"
     print(f"   工单标题: {result['title']}")
 
     # 4. update_ticket_status
-    print("\n4. update_ticket_status(ticket_id='TK20240501001', new_status='处理中')")
-    result = update_ticket_status("TK20240501001", "处理中")
+    print(f"\n4. update_ticket_status(ticket_id='{TEST_TICKET}', new_status='处理中')")
+    result = update_ticket_status(TEST_TICKET, "处理中")
     assert "error" not in result, f"FAIL: {result.get('error')}"
     print(f"   更新后状态: {result['status']}")
+    # 恢复原状态，避免污染后续测试
+    update_ticket_status(TEST_TICKET, "已解决")
 
     # 5. assign_ticket
-    print("\n5. assign_ticket(ticket_id='TK20240501001', assignee='张三')")
-    result = assign_ticket("TK20240501001", "张三")
+    print(f"\n5. assign_ticket(ticket_id='{TEST_TICKET}', assignee='张三')")
+    result = assign_ticket(TEST_TICKET, "张三")
     assert "error" not in result, f"FAIL: {result.get('error')}"
     print(f"   处理人: {result['assignee']}")
 
     # 6. add_ticket_reply
-    print("\n6. add_ticket_reply(ticket_id='TK20240501001', content='已核实情况')")
-    result = add_ticket_reply("TK20240501001", "已核实情况，正在协调财务处理")
+    print(f"\n6. add_ticket_reply(ticket_id='{TEST_TICKET}', content='已核实情况')")
+    result = add_ticket_reply(TEST_TICKET, "已核实情况，正在协调处理")
     assert result.get("success"), f"FAIL: {result}"
     print(f"   回复成功: {result['success']}")
 
     # 7. 验证详情含回复
-    print("\n7. get_ticket_detail(ticket_id='TK20240501001') — 含回复")
-    result = get_ticket_detail("TK20240501001")
+    print(f"\n7. get_ticket_detail(ticket_id='{TEST_TICKET}') — 含回复")
+    result = get_ticket_detail(TEST_TICKET)
     print(f"   回复数: {len(result.get('replies', []))}")
     assert len(result["replies"]) >= 1, "FAIL: 应包含至少1条回复"
 
     # 8. 边界条件
     print("\n8. 边界条件测试")
-    result = get_ticket_detail("NOT_EXIST")
+    result = get_ticket_detail("WO-NOT-EXIST")
     assert "error" in result, "FAIL: 不存在的工单应返回 error"
 
-    result = update_ticket_status("TK20240501001", "无效状态")
+    result = update_ticket_status(TEST_TICKET, "无效状态")
     assert "error" in result, "FAIL: 无效状态应返回 error"
 
     result = query_tickets(date_range="invalid-range")

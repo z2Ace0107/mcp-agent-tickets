@@ -19,6 +19,16 @@ from backend.config import get_settings
 # 常量
 # ============================================================
 
+ROUTE_LABELS = {
+    "chat":          ("💬", "直接回复", "#93C5FD"),
+    "simple_query":  ("⚡", "快速查询", "#4ADE80"),
+    "complex":       ("🧠", "深度推理", "#C084FC"),
+}
+INTENT_LABELS = {
+    "query": "查询工单", "analyze": "统计分析", "recommend": "智能推荐",
+    "search": "搜索方案", "chat": "闲聊", "unknown": "未知",
+}
+
 TOOL_CN_MAP = {
     "query_tickets_tool":       "工单查询",
     "analyze_tickets_tool":     "工单分析",
@@ -61,7 +71,7 @@ CUSTOM_CSS = """
    ============================================================= */
 
 /* === 全局背景 === */
-.stApp { background: #1b1c21 !important; }
+.stApp { background: #1b1c21 !important; font-size: 0.875rem; }
 .main .block-container {
     padding: 1.5rem 2.5rem 1rem 2.5rem;
     max-width: 820px !important;
@@ -94,15 +104,12 @@ header[data-testid="stHeader"] { background: transparent !important; }
 
 /* === 统计卡片 — 幽灵卡片风格 === */
 .stat-card {
-    border-radius: 8px; padding: 0.9rem 1rem 0.85rem 1.1rem;
-    border: 1px solid rgba(255,255,255,0.06);
-    background: rgba(255,255,255,0.02);
-    transition: border-color 0.15s, background 0.15s;
+    border-radius: 8px; padding: 0.75rem 0.9rem 0.7rem 0.9rem;
+    border: 1px solid rgba(255,255,255,0.05);
+    background: rgba(255,255,255,0.015);
+    transition: border-color 0.15s;
 }
-.stat-card:hover {
-    border-color: rgba(255,255,255,0.12);
-    background: rgba(255,255,255,0.04);
-}
+.stat-card:hover { border-color: rgba(255,255,255,0.10); }
 .stat-value {
     font-size: 1.45rem; font-weight: 600; line-height: 1.15;
     letter-spacing: -0.01em;
@@ -145,13 +152,13 @@ header[data-testid="stHeader"] { background: transparent !important; }
     border-radius: 10px !important;
     border: 1px solid rgba(255,255,255,0.10) !important;
     background: rgba(255,255,255,0.03) !important;
-    font-size: 0.875rem !important; min-height: 52px !important;
+    font-size: 0.875rem !important; min-height: 60px !important; transition: border-color 0.15s, box-shadow 0.15s;
     color: #ECECEC !important;
 }
 [data-testid="stChatInput"] textarea::placeholder { color: #6B7280 !important; }
 [data-testid="stChatInput"] textarea:focus {
-    border-color: rgba(255,255,255,0.18) !important;
-    box-shadow: 0 0 0 2px rgba(77,107,254,0.12) !important;
+    border-color: rgba(77,107,254,0.35) !important;
+    box-shadow: 0 0 0 3px rgba(77,107,254,0.15) !important;
 }
 
 /* === 侧边栏 === */
@@ -247,6 +254,21 @@ hr { border-color: rgba(255,255,255,0.06) !important; margin: 0.5rem 0 !importan
 /* === 无数据占位 === */
 .empty-hint { color: #6B7280; font-size: 0.75rem; padding: 0.2rem 0; font-weight: 400; }
 
+/* === v3.1 表格极简 === */
+.markdown-table {
+    width: 100%; border-collapse: collapse; font-size: 0.82rem;
+}
+.markdown-table thead th {
+    text-align: left; font-weight: 400; color: #6B7280;
+    font-size: 0.72rem; padding: 6px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.markdown-table tbody td {
+    padding: 5px 10px; color: #D1D1D1;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.markdown-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+
 /* === Scrollbar === */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -329,30 +351,153 @@ def fetch_ticket_stats():
         conn.close()
 
 
-def render_reAct_steps(steps: list[dict]):
-    if not steps:
+def convert_markdown_table(text: str) -> str:
+    """将 Markdown 表格转换为 Key-Value 列表格式，提升可读性。"""
+    import re
+
+    def _is_separator(line: str) -> bool:
+        parts = [c.strip() for c in line.strip("|").split("|")]
+        return all(re.match(r"^[\s\-:]+$", p) for p in parts if p)
+
+    lines = text.split("\n")
+    result = []
+    in_table = False
+    table_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^\|.+\|$", stripped):
+            if _is_separator(stripped):
+                continue
+            if not in_table:
+                in_table = True
+                table_lines = []
+            table_lines.append(stripped)
+        else:
+            if in_table and table_lines:
+                result.append(_table_to_kv(table_lines))
+                table_lines = []
+                in_table = False
+            result.append(line)
+
+    if in_table and table_lines:
+        result.append(_table_to_kv(table_lines))
+
+    return "\n".join(result)
+
+
+def _table_to_kv(lines: list[str]) -> str:
+    """将表格行列表转换为 ● Key: Value 格式。"""
+    cols = [c.strip() for c in lines[0].strip("|").split("|")]
+    out = []
+    for line in lines[1:]:
+        vals = [c.strip() for c in line.strip("|").split("|")]
+        if len(vals) == len(cols):
+            if len(cols) == 2:
+                out.append(f"● {vals[0]}: {vals[1]}")
+            else:
+                items = "  |  ".join(f"{cols[i]}: {vals[i]}" for i in range(len(cols)))
+                out.append(f"● {items}")
+    return "\n".join(out)
+
+
+def render_reAct_steps(msg: dict):
+    """渲染推理步骤面板 — v3.0: 含步骤 0 预处理 + 工具耗时/裁剪标记。"""
+    steps = msg.get("steps", [])
+    route = msg.get("route", "")
+    intent = msg.get("intent", "")
+    rewritten = msg.get("rewritten_query", "")
+
+    # 无步骤且无路由信息时直接返回
+    if not steps and not route:
         return
+
+    # 面板标题
+    step_count = len(steps)
+    if route == "chat":
+        title_parts = ["推理过程（💬 直接回复）"]
+    elif step_count == 0:
+        title_parts = ["推理过程（0 步）"]
+    else:
+        title_parts = [f"推理过程（{step_count} 步）"]
+
     expanded = st.session_state.get("auto_expand_react", False)
-    with st.expander(f"推理过程（{len(steps)} 步）", expanded=expanded):
+    with st.expander("  ".join(title_parts), expanded=expanded):
+        # ---- 步骤 0: 预处理结果 ----
+        if route and route != "chat":
+            route_icon, route_label, route_color = ROUTE_LABELS.get(route, ("", route, "#8B8B8B"))
+            intent_cn = INTENT_LABELS.get(intent, intent)
+            st.markdown(
+                f'<span style="display:inline-flex;align-items:center;gap:6px;font-size:0.82rem;color:{route_color};">'
+                f'{route_icon} <b>步骤 0</b> — 意图识别</span>',
+                unsafe_allow_html=True,
+            )
+            st.caption(f"意图：{intent_cn}　|　路由：{route_icon} {route_label}")
+            if rewritten:
+                st.caption(f"改写：{rewritten[:120]}{'...' if len(rewritten) > 120 else ''}")
+            if steps:
+                st.divider()
+
+        # ---- 工具步骤 ----
         for si, step in enumerate(steps, 1):
             tool_name = step.get("action", "unknown")
             tool_cn = TOOL_CN_MAP.get(tool_name, tool_name)
-            st.markdown(f"**步骤 {si}** — {tool_cn}")
+            elapsed = step.get("elapsed", 0)
+            trimmed = step.get("trimmed", False)
+            degraded = step.get("degraded", False)
+            retries = step.get("retries", 0)
+            orig_len = step.get("original_length", 0)
+
+            # 步骤标题 + 状态徽标
+            status_html = ""
+            if degraded:
+                status_html = (
+                    ' <span style="font-size:0.65rem;color:#FCA5A5;'
+                    'background:rgba(239,68,68,0.1);padding:0px 5px;border-radius:4px;">降级</span>'
+                )
+            elif trimmed:
+                status_html = (
+                    ' <span style="font-size:0.65rem;color:#FCD34D;'
+                    'background:rgba(245,158,11,0.1);padding:0px 5px;border-radius:4px;">已裁剪</span>'
+                )
+            st.markdown(
+                f"**步骤 {si}** — {tool_cn}{status_html}",
+                unsafe_allow_html=True,
+            )
+
+            # 耗时 + 字符数
+            meta_parts = []
+            if elapsed > 0:
+                meta_parts.append(f"⏱ {elapsed}s")
+            if orig_len > 0:
+                meta_parts.append(f"📄 {orig_len} 字符")
+            if trimmed:
+                meta_parts.append("✂ 已裁剪")
+            if retries > 0:
+                meta_parts.append(f"🔄 重试 {retries} 次")
+            if meta_parts:
+                st.caption("  ".join(meta_parts))
+
+            # 思考过程
             thought = step.get("thought", "")
             if thought:
                 st.markdown(f"*{thought[:300]}*")
+
+            # 参数
             try:
                 args_str = step.get("action_input", "{}")
                 args_parsed = json.loads(args_str) if isinstance(args_str, str) else args_str
                 st.code(json.dumps(args_parsed, ensure_ascii=False, indent=2), language="json")
             except Exception:
                 st.text(str(step.get("action_input", ""))[:500])
+
+            # 观察结果
             obs = str(step.get("observation", ""))
             if len(obs) > 600:
                 st.caption(f"数据较长（{len(obs)} 字符），仅显示前 600 字符：")
                 st.code(obs[:600], language="json")
             elif obs:
                 st.code(obs, language="json")
+
             if si < len(steps):
                 st.divider()
 
@@ -442,7 +587,7 @@ with tl:
     st.markdown(
         '<div class="app-title">'
         '🎫 MCP 智能工单助手'
-        '<span class="badge">v2.0</span>'
+        '<span class="badge">v3.0</span>'
         '</div>'
         '<div class="app-subtitle">企业工单管理与智能分析</div>',
         unsafe_allow_html=True,
@@ -488,50 +633,75 @@ for col, (color, val, label) in zip([c1, c2, c3, c4], cards):
 # ============================================================
 
 with st.sidebar:
-    # 快捷查工单
-    st.markdown('<div class="section-label">快捷查工单</div>', unsafe_allow_html=True)
-    def _on_quick_ticket():
-        val = st.session_state.get("_quick_ticket_input", "").strip()
-        if val:
-            st.session_state.pending_prompt = f"查看工单 {val} 的详细信息"
-            st.session_state._quick_ticket_input = ""
-    st.text_input(
-        "工单编号", placeholder="TK20240501001...",
-        label_visibility="collapsed", key="_quick_ticket_input",
-        on_change=_on_quick_ticket,
-    )
+    # ⚡ 工具箱（可折叠）
+    with st.expander("⚡ 工具箱", expanded=False):
+        # 快捷查工单
+        st.markdown('<div class="section-label">快捷查工单</div>', unsafe_allow_html=True)
+        def _on_quick_ticket():
+            val = st.session_state.get("_quick_ticket_input", "").strip()
+            if val:
+                st.session_state.pending_prompt = f"查看工单 {val} 的详细信息"
+                st.session_state._quick_ticket_input = ""
+        st.text_input(
+            "工单编号", placeholder="WO-20260428-001...",
+            label_visibility="collapsed", key="_quick_ticket_input",
+            on_change=_on_quick_ticket,
+        )
 
-    # 智能提醒
-    st.markdown('<div class="section-label">提醒</div>', unsafe_allow_html=True)
-    alerts = []
-    if stats["urgent"] > 0:
-        tid = stats.get("top_urgent_id", "")
-        ttl = stats.get("top_urgent_title", "")
-        alerts.append(("danger", f'{stats["urgent"]} 个紧急工单待处理\n{tid}: {ttl[:30]}...'))
-    if stats["pending"] > 5:
-        alerts.append(("warning", f'待处理工单积压（{stats["pending"]} 个）'))
-    if stats["today"] > 0:
-        alerts.append(("info", f'今日新增 {stats["today"]} 个工单'))
-    if alerts:
-        for cls, text in alerts:
+        # 智能提醒
+        st.markdown('<div class="section-label">提醒</div>', unsafe_allow_html=True)
+        alerts = []
+        if stats["urgent"] > 0:
+            tid = stats.get("top_urgent_id", "")
+            ttl = stats.get("top_urgent_title", "")
+            alerts.append(("danger", f'{stats["urgent"]} 个紧急工单待处理\n{tid}: {ttl[:30]}...'))
+        if stats["pending"] > 5:
+            alerts.append(("warning", f'待处理工单积压（{stats["pending"]} 个）'))
+        if stats["today"] > 0:
+            alerts.append(("info", f'今日新增 {stats["today"]} 个工单'))
+        if alerts:
+            for cls, text in alerts:
+                st.markdown(
+                    f'<div class="alert-badge {cls}"><span class="dot"></span>{text}</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.markdown('<div class="empty-hint">暂无提醒</div>', unsafe_allow_html=True)
+
+        # v3.0 上下文状态指示器
+        last_ctx = None
+        for m in reversed(st.session_state.chat_history):
+            if m.get("role") == "assistant" and m.get("context_info"):
+                last_ctx = m["context_info"]
+                break
+        if last_ctx and (last_ctx.get("compressed", 0) > 0):
+            total = last_ctx.get("total_messages", 0)
+            compressed = last_ctx.get("compressed", 0)
+            kept = last_ctx.get("kept", 0)
             st.markdown(
-                f'<div class="alert-badge {cls}"><span class="dot"></span>{text}</div>',
+                f'<div class="alert-badge info" style="margin-top:6px;">'
+                f'<span class="dot"></span>上下文: {total} 条消息 (早期 {compressed} 条已压缩, 保留最近 {kept} 条)</div>',
                 unsafe_allow_html=True,
             )
-    else:
-        st.markdown('<div class="empty-hint">暂无提醒</div>', unsafe_allow_html=True)
+        elif last_ctx and last_ctx.get("total_messages", 0) > 6:
+            total = last_ctx.get("total_messages", 0)
+            st.markdown(
+                f'<div class="alert-badge info" style="margin-top:6px;">'
+                f'<span class="dot"></span>上下文: {total} 条消息 (未压缩)</div>',
+                unsafe_allow_html=True,
+            )
 
-    # 演示模式
-    st.markdown('<div class="section-label">演示</div>', unsafe_allow_html=True)
-    def _on_demo_change():
-        val = st.session_state.get("_demo_select", "")
-        if val != "— 演示场景 —":
-            st.session_state.pending_prompt = DEMO_SCENARIOS[val]
-            st.session_state._demo_select = "— 演示场景 —"
-    st.selectbox(
-        "场景", list(DEMO_SCENARIOS.keys()), label_visibility="collapsed",
-        key="_demo_select", on_change=_on_demo_change,
-    )
+        # 演示模式
+        st.markdown('<div class="section-label">演示</div>', unsafe_allow_html=True)
+        def _on_demo_change():
+            val = st.session_state.get("_demo_select", "")
+            if val != "— 演示场景 —":
+                st.session_state.pending_prompt = DEMO_SCENARIOS[val]
+                st.session_state._demo_select = "— 演示场景 —"
+        st.selectbox(
+            "场景", list(DEMO_SCENARIOS.keys()), label_visibility="collapsed",
+            key="_demo_select", on_change=_on_demo_change,
+        )
 
     # 对话历史
     st.markdown('<div class="section-label">对话历史</div>', unsafe_allow_html=True)
@@ -696,9 +866,20 @@ for idx, msg in enumerate(st.session_state.chat_history):
     msg_time = msg.get("time", "")
 
     with st.chat_message(role):
-        st.markdown(content)
+        st.markdown(convert_markdown_table(content))
         if st.session_state.show_timestamps and msg_time:
-            st.caption(msg_time)
+            # 路由徽标
+            route = msg.get("route", "")
+            if route:
+                icon, label, color = ROUTE_LABELS.get(route, ("", route, "#8B8B8B"))
+                st.markdown(
+                    f'<span style="font-size:0.68rem;color:{color};margin-right:6px;">'
+                    f'{icon} {label}</span>'
+                    f'<span style="font-size:0.7rem;color:#6B7280;">{msg_time}</span>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption(msg_time)
 
         if role == "assistant":
             # 操作按钮行
@@ -722,7 +903,7 @@ for idx, msg in enumerate(st.session_state.chat_history):
                     del st.session_state[f"_clip_{idx}"]
                     st.rerun()
 
-            render_reAct_steps(msg.get("steps", []))
+            render_reAct_steps(msg)
 
 # ============================================================
 # 备注弹窗
@@ -809,22 +990,45 @@ if prompt:
                 ))
                 response_text = result["output"]
                 steps = result["intermediate_steps"]
+                route = result.get("route", "")
+                intent = result.get("intent", "")
+                rewritten = result.get("rewritten_query", "")
+                context_info = result.get("context_info")
             except Exception as e:
                 response_text = f"执行出错：{str(e)}"
                 steps = []
+                route = intent = rewritten = ""
+                context_info = None
 
     now_assist = datetime.now().strftime("%m-%d %H:%M")
 
+    # 当前轮次的临时消息对象（用于渲染）
+    current_msg = {
+        "role": "assistant", "content": response_text, "time": now_assist,
+        "steps": steps, "route": route, "intent": intent, "rewritten_query": rewritten,
+    }
+
     with st.chat_message("assistant"):
-        st.markdown(response_text)
-        st.caption(now_assist)
-        render_reAct_steps(steps)
+        st.markdown(convert_markdown_table(response_text))
+        if route:
+            icon, label, color = ROUTE_LABELS.get(route, ("", route, "#8B8B8B"))
+            st.markdown(
+                f'<span style="font-size:0.68rem;color:{color};margin-right:6px;">'
+                f'{icon} {label}</span>'
+                f'<span style="font-size:0.7rem;color:#6B7280;">{now_assist}</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption(now_assist)
+        render_reAct_steps(current_msg)
 
     st.session_state.chat_history.append({
         "role": "user", "content": prompt, "time": now_str, "steps": [],
     })
     st.session_state.chat_history.append({
-        "role": "assistant", "content": response_text, "time": now_assist, "steps": steps,
+        "role": "assistant", "content": response_text, "time": now_assist,
+        "steps": steps, "route": route, "intent": intent,
+        "rewritten_query": rewritten, "context_info": context_info,
     })
 
     save_current_conversation()
