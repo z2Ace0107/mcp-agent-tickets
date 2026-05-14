@@ -14,6 +14,7 @@ import streamlit as st
 from backend import init_app
 from backend.agent import run_agent
 from backend.config import get_settings
+from backend.scheduler import check_urgent_alerts, get_cached_alerts, generate_report_text
 
 # ============================================================
 # 常量
@@ -648,27 +649,38 @@ with st.sidebar:
             on_change=_on_quick_ticket,
         )
 
-        # 智能提醒
+        # 智能提醒（v3.2: 使用 scheduler 检测逻辑）
         st.markdown('<div class="section-label">提醒</div>', unsafe_allow_html=True)
-        alerts = []
-        if stats["urgent"] > 0:
-            tid = stats.get("top_urgent_id", "")
-            ttl = stats.get("top_urgent_title", "")
-            alerts.append(("danger", f'{stats["urgent"]} 个紧急工单待处理\n{tid}: {ttl[:30]}...'))
-        if stats["pending"] > 5:
-            alerts.append(("warning", f'待处理工单积压（{stats["pending"]} 个）'))
-        if stats["today"] > 0:
-            alerts.append(("info", f'今日新增 {stats["today"]} 个工单'))
-        if alerts:
-            for cls, text in alerts:
+        alert_items = check_urgent_alerts()
+        if not alert_items:
+            # 回退到基础统计提醒
+            if stats["urgent"] > 0:
+                tid = stats.get("top_urgent_id", "")
+                ttl = stats.get("top_urgent_title", "")
+                alert_items.append({"level": "danger", "title": f'{stats["urgent"]} 个紧急工单待处理', "detail": f'{tid}: {ttl[:30]}...', "count": stats["urgent"]})
+            if stats["pending"] > 5:
+                alert_items.append({"level": "warning", "title": f'待处理工单积压（{stats["pending"]} 个）', "detail": "建议优先分配", "count": stats["pending"]})
+            if stats["today"] > 0:
+                alert_items.append({"level": "info", "title": f'今日新增 {stats["today"]} 个工单', "detail": "", "count": stats["today"]})
+        if alert_items:
+            for item in alert_items:
                 st.markdown(
-                    f'<div class="alert-badge {cls}"><span class="dot"></span>{text}</div>',
+                    f'<div class="alert-badge {item["level"]}">'
+                    f'<span class="dot"></span>{item["title"]}</div>',
                     unsafe_allow_html=True,
                 )
         else:
             st.markdown('<div class="empty-hint">暂无提醒</div>', unsafe_allow_html=True)
 
-        # v3.0 上下文状态指示器
+        # 一键日报
+        if st.button("📊 生成日报", use_container_width=True, key="_daily_report_btn"):
+            report = generate_report_text(stats)
+            st.session_state.pending_prompt = (
+                "请基于以下数据生成一份结构化的工单日报（概览/紧急事项/处理人负荷/趋势/建议）：\n\n" + report
+            )
+            st.rerun()
+
+        # v3.2 上下文状态指示器
         last_ctx = None
         for m in reversed(st.session_state.chat_history):
             if m.get("role") == "assistant" and m.get("context_info"):
@@ -814,6 +826,16 @@ with st.sidebar:
     st.markdown('<div class="section-label">设置</div>', unsafe_allow_html=True)
     st.toggle("时间戳", key="show_timestamps")
     st.toggle("展开推理", key="auto_expand_react")
+    monitor_on = st.toggle("⚡ 实时监控 (60s)", key="monitor_enabled")
+    if monitor_on:
+        cached = get_cached_alerts()
+        last = cached.get("last_check", "尚未检测")
+        st.caption(f"上次检测: {last}")
+        # 每 60s 自动刷新
+        st.markdown(
+            '<meta http-equiv="refresh" content="60">',
+            unsafe_allow_html=True,
+        )
 
     if not HAS_API_KEY:
         api_input = st.text_input(
