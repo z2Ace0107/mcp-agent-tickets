@@ -24,6 +24,9 @@ from backend.tools import (
     search_solutions,
     recommend_tickets,
     web_search,
+    get_schema,
+    execute_sql,
+    execute_python,
 )
 from backend.logger import get_logger
 
@@ -41,11 +44,11 @@ server = Server("mcp-ticket-agent")
 TOOL_DEFINITIONS = [
     Tool(
         name="query_tickets",
-        description="按条件筛选工单列表。ticket_type: 工单类型（退款/技术/咨询/投诉），可选; status: 工单状态（待处理/处理中/已解决/已关闭），可选; date_range: 日期范围（today/week/month/YYYY-MM-DD,YYYY-MM-DD），可选。",
+        description="按条件筛选工单列表。ticket_type: 设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测; status: 待处理/处理中/已解决/已关闭; date_range: today/week/month/YYYY-MM-DD,YYYY-MM-DD。返回含设备/产线/物料FK引用的完整工单。",
         inputSchema={
             "type": "object",
             "properties": {
-                "ticket_type": {"type": "string", "description": "工单类型：退款/技术/咨询/投诉"},
+                "ticket_type": {"type": "string", "description": "工单类型：设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测"},
                 "status": {"type": "string", "description": "工单状态：待处理/处理中/已解决/已关闭"},
                 "date_range": {"type": "string", "description": "日期范围：today/week/month/YYYY-MM-DD,YYYY-MM-DD"},
             },
@@ -142,6 +145,38 @@ TOOL_DEFINITIONS = [
             "required": ["query"],
         },
     ),
+    Tool(
+        name="get_schema",
+        description="获取数据库表结构。共12张表：tickets(工单)/equipment(设备)/production_lines(产线)/materials(物料)/quality_metrics(质量指标)/ticket_replies(回复)/conversations(对话)等。table_name可选，为None返回所有表概览。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "table_name": {"type": "string", "description": "表名，可选。如tickets/equipment/materials等"},
+            },
+        },
+    ),
+    Tool(
+        name="execute_sql",
+        description="执行只读SQL查询（仅允许SELECT/PRAGMA/EXPLAIN/WITH）。sql: SQL语句，必填。常用模板见sql_templates表。示例：SELECT * FROM tickets WHERE created_at = date('now')",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "description": "只读SQL查询语句（仅SELECT/PRAGMA）"},
+            },
+            "required": ["sql"],
+        },
+    ),
+    Tool(
+        name="execute_python",
+        description="在受限沙箱中执行Python代码用于数据分析。可用模块：json/datetime/math/statistics/collections/itertools。code: Python代码，必填。最后一行若为表达式自动求值并返回。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python代码"},
+            },
+            "required": ["code"],
+        },
+    ),
 ]
 
 # 工具执行映射
@@ -155,6 +190,9 @@ TOOL_HANDLERS = {
     "search_solutions": search_solutions,
     "recommend_tickets": recommend_tickets,
     "web_search": web_search,
+    "get_schema": get_schema,
+    "execute_sql": execute_sql,
+    "execute_python": execute_python,
 }
 
 

@@ -40,6 +40,9 @@ TOOL_CN_MAP = {
     "search_solutions_tool":    "检索方案",
     "recommend_tickets_tool":   "智能推荐",
     "web_search_tool":          "联网搜索",
+    "get_schema_tool":          "查看Schema",
+    "execute_sql_tool":         "执行SQL",
+    "execute_python_tool":      "执行Python",
 }
 
 DEMO_SCENARIOS = {
@@ -851,15 +854,24 @@ with st.sidebar:
             import sqlite3
             from backend.database import init_db as reinit_db
             conn = sqlite3.connect(settings.DATABASE_PATH)
+            # v3.3: 覆盖全部 12 张表
+            conn.execute("DELETE FROM quality_metrics")
             conn.execute("DELETE FROM ticket_replies")
             conn.execute("DELETE FROM tickets")
-            conn.execute("DELETE FROM conversations")
+            conn.execute("DELETE FROM materials")
+            conn.execute("DELETE FROM production_lines")
+            conn.execute("DELETE FROM equipment")
             conn.execute("DELETE FROM conversation_messages")
+            conn.execute("DELETE FROM conversations")
+            conn.execute("DELETE FROM correction_rules")
+            conn.execute("DELETE FROM agent_actions")
+            conn.execute("DELETE FROM sql_templates")
+            conn.execute("DELETE FROM db_schema_info")
             conn.commit()
             conn.close()
             reinit_db()
             start_new_conversation()
-            st.success("已重置")
+            st.success("已重置全部 12 张表")
             time.sleep(0.5)
             st.rerun()
         if st.button("🗑️ 清空历史", use_container_width=True):

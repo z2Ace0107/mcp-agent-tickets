@@ -76,7 +76,98 @@ def init_db(db_path: str | None = None) -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id)
             );
+
+            -- v3.3 星型 Schema 新增 4 表
+            CREATE TABLE IF NOT EXISTS db_schema_info (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_name TEXT NOT NULL,
+                column_name TEXT NOT NULL,
+                data_type TEXT NOT NULL,
+                is_nullable INTEGER NOT NULL DEFAULT 1,
+                is_primary_key INTEGER NOT NULL DEFAULT 0,
+                description TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_type TEXT NOT NULL,
+                action_name TEXT NOT NULL,
+                input_params TEXT DEFAULT '{}',
+                output_summary TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'success',
+                error_message TEXT DEFAULT '',
+                elapsed_ms REAL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                conversation_id INTEGER,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS sql_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                sql_text TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                category TEXT DEFAULT '通用',
+                is_safe INTEGER NOT NULL DEFAULT 1,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS correction_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                error_pattern TEXT NOT NULL,
+                rule_description TEXT NOT NULL,
+                fix_template TEXT DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0.5,
+                source_action_id INTEGER,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (source_action_id) REFERENCES agent_actions(id)
+            );
+
+            -- v3.3 星型 Schema：4 张领域表
+            CREATE TABLE IF NOT EXISTS equipment (
+                equipment_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                model TEXT DEFAULT '',
+                install_date TEXT DEFAULT '',
+                mtbf TEXT DEFAULT '',
+                supplier TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS production_lines (
+                line_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                product TEXT DEFAULT '',
+                daily_capacity INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS materials (
+                material_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                spec TEXT DEFAULT '',
+                supplier TEXT DEFAULT '',
+                unit_price TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS quality_metrics (
+                metric_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                defect_rate REAL DEFAULT 0,
+                rework_hours REAL DEFAULT 0,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
+            );
         """)
+        # 兼容旧数据库：添加 FK 列 + 新表（不影响已有数据）
+        for col_stmt in [
+            "ALTER TABLE tickets ADD COLUMN equipment_id TEXT",
+            "ALTER TABLE tickets ADD COLUMN line_id TEXT",
+            "ALTER TABLE tickets ADD COLUMN material_id TEXT",
+        ]:
+            try:
+                conn.execute(col_stmt)
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+        conn.commit()
         # 兼容旧数据库：添加 pinned 列（如果不存在）
         try:
             conn.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
@@ -84,31 +175,39 @@ def init_db(db_path: str | None = None) -> None:
             pass  # 列已存在
         conn.commit()
 
-        # 空库时填入种子数据
-        count = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
-        if count == 0:
-            _seed_tickets(conn)
-            logger.info("数据库初始化完成，已填入 17 条种子工单")
-        else:
-            logger.info(f"数据库已存在 {count} 条工单，跳过种子数据")
+        # v3.3: 先种子领域表（tickets FK 依赖它们）
+        _seed_equipment(conn)
+        _seed_production_lines(conn)
+        _seed_materials(conn)
+        # 种子工单（含 FK 引用）
+        _seed_tickets(conn)
+        _seed_quality_metrics(conn)
+        ticket_count = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
+        logger.info(f"工单种子数据就绪，共 {ticket_count} 条")
+
+        # Agent 系统表种子数据
+        _seed_db_schema_info(conn)
+        _seed_sql_templates(conn)
+        _seed_correction_rules(conn)
+        logger.info("v3.3 领域表 + Agent 系统表种子数据就绪")
     finally:
         conn.close()
 
 
 def _seed_tickets(conn: sqlite3.Connection) -> None:
-    """填入 20 条真实工厂场景工单种子数据。"""
+    """填入 30+ 条真实工厂场景工单种子数据（含 FK 引用）。"""
+    # 格式: (ticket_id, title, type, status, priority, assignee, created_at, description, equipment_id, line_id, material_id)
     tickets = [
-        # ===== 设备故障类 =====
+        # ===== 设备故障类 (5条) =====
         ("WO-20260428-001", "CNC加工中心主轴异响停机 — 3号生产线停线",
          "设备故障", "已解决", "紧急",
          "张建国", "2026-04-28",
          "设备编号：CNC-MC-003 | 型号：DMG MORI DMU 50 | 安装日期：2019-03\n"
          "故障现象：主轴转速升至8000rpm时出现尖锐异响，振动值从正常0.8mm/s飙升至4.2mm/s，"
-         "设备自动触发紧急停机保护。3号生产线全线停产，影响当日计划产量280件（壳体精加工工序），"
-         "预计产值损失约￥12,800/小时。\n"
+         "设备自动触发紧急停机保护。3号生产线全线停产，影响当日计划产量280件（壳体精加工工序）。\n"
          "初步判断：主轴轴承润滑系统异常或轴承磨损超限。上次保养日期2026-03-15，"
-         "保养记录显示主轴轴承已运行超12000小时，接近设计寿命。\n"
-         "已采取措施：维修班组已拆解主轴防护罩，待进一步诊断。"),
+         "保养记录显示主轴轴承已运行超12000小时，接近设计寿命。",
+         "EQP-001", "LINE-001", None),
 
         ("WO-20260506-002", "注塑机温控系统失控导致批量产品报废",
          "设备故障", "处理中", "紧急",
@@ -116,9 +215,9 @@ def _seed_tickets(conn: sqlite3.Connection) -> None:
          "设备编号：IM-06 | 型号：海天MA3200 | 负责产品：新能源汽车连接器外壳\n"
          "故障描述：5月6日早班8:30起，注塑机4区（喷嘴段）温度显示从设定值235℃漂移至278℃，"
          "温控表PID调节无响应，导致连续39模（约156件）产品因材料过热分解出现黑点、脆化缺陷，"
-         "全部报废。单件成本￥18.50，直接损失约￥2,886，模具需拆检确认流道内是否有碳化物残留。\n"
-         "初步排查：热电偶接线端子氧化接触不良，加热圈继电器触点粘连无法断开。\n"
-         "影响范围：该产品供应比亚迪汽车，日交付量1200件，目前安全库存仅够维持2天。"),
+         "全部报废。单件成本￥18.50，直接损失约￥2,886。\n"
+         "初步排查：热电偶接线端子氧化接触不良，加热圈继电器触点粘连无法断开。",
+         "EQP-002", None, None),
 
         ("WO-20260508-003", "空压机站2号机频繁跳闸 — 全厂气压不足",
          "设备故障", "待处理", "高",
@@ -126,233 +225,479 @@ def _seed_tickets(conn: sqlite3.Connection) -> None:
          "设备编号：AC-02 | 型号：Atlas Copco GA90 | 功率：90kW\n"
          "故障现象：2号空压机连续3天出现运行中突然跳闸，复位后能重启但1-3小时后再次跳闸。"
          "跳闸时面板显示ERR-14（电机过载），但实测运行电流仅为额定值85%。"
-         "1号机单独供气时管网压力只能维持5.2bar，低于产线要求的6.0bar最低标准，"
-         "导致气动工具出力不足、自动装配线抓取失败率上升。\n"
-         "已排查项：接触器触点正常无烧蚀、热继电器整定值正确、电机三相绕组绝缘＞50MΩ正常。"
-         "怀疑变频器IGBT模块间歇性故障或电流传感器漂移。"),
+         "1号机单独供气时管网压力只能维持5.2bar，低于产线要求的6.0bar最低标准。\n"
+         "怀疑变频器IGBT模块间歇性故障或电流传感器漂移。",
+         "EQP-003", None, None),
 
         ("WO-20260420-004", "AGV搬运车导航偏差撞坏线边物料架",
          "设备故障", "已解决", "高",
          "张建国", "2026-04-20",
          "设备编号：AGV-05 | 型号：海康威视MR-Q3-300\n"
-         "事故描述：4月20日14:22，AGV-05在执行成品入库任务（路线R-07）时，行至2号仓库D区"
-         "转弯处激光SLAM定位突然漂移约40cm，右侧碰撞线边不锈钢物料架，导致物料架倾倒、"
-         "架上的32件已检成品（变速箱端盖）散落地面，其中11件外观划伤需返工，物料架变形需更换。"
-         "直接损失约￥2,400。\n"
+         "事故描述：4月20日14:22，AGV-05在执行成品入库任务时，行至2号仓库D区"
+         "转弯处激光SLAM定位突然漂移约40cm，右侧碰撞线边不锈钢物料架，导致物料架倾倒。\n"
          "根因分析：D区转弯处新安装了大型设备包装箱，造成激光雷达部分视野遮挡，"
-         "同时该区域地面反光标识因叉车长期碾压磨损严重，双重因素导致定位失准。"),
+         "同时该区域地面反光标识因叉车长期碾压磨损严重。",
+         "EQP-004", None, None),
 
         ("WO-20260501-005", "焊接机器人焊缝偏移不良率从0.3%升至5.7%",
          "设备故障", "处理中", "高",
          "李明辉", "2026-05-01",
          "设备编号：WR-02 | 型号：FANUC R-2000iC/210F | 焊接产品：车身加强板总成\n"
          "问题：近3天统计数据显示WR-02工位焊接的加强板总成焊缝偏移不良率从正常的≤0.3%"
-         "急剧上升至5.7%，远超1.5%的控制上限。缺陷表现为焊缝偏离理论轨迹0.8-1.5mm，"
-         "部分焊点熔深不足。\n"
-         "排查进展：已排除焊丝批次问题（同批次另两台机器人正常）、夹具定位精度（经三坐标"
-         "检测定位销磨损量0.02mm在公差内）。下一步需检查机器人TCP标定、减速机背隙、"
-         "以及焊接电源输出电压稳定性。\n"
-         "影响：若持续恶化，每日不良品将从约17件增至80+件，且有漏检流出的质量风险。"),
+         "急剧上升至5.7%，远超1.5%的控制上限。缺陷表现为焊缝偏离理论轨迹0.8-1.5mm。\n"
+         "排查进展：已排除焊丝批次问题、夹具定位精度。下一步需检查机器人TCP标定、减速机背隙。",
+         "EQP-005", None, None),
 
-        # ===== 质量异常类 =====
+        # ===== 质量异常类 (4条) =====
         ("WO-20260505-006", "来料检验：批次钢材硬度偏低不合规",
          "质量异常", "待处理", "紧急",
          "", "2026-05-05",
          "供应商：武汉钢铁集团有限公司 | 采购单号：PO-2026-0418-035\n"
          "物料：40Cr调质钢棒材 Φ60×3000mm | 批次号：WG-2026-0428-B07 | 数量：2,800kg\n"
-         "检验结果：抽样5件检测硬度，要求HRC 28-32，实测值分别为24.5、25.0、24.8、25.3、24.6，"
-         "全部低于下限。同时抗拉强度检测值为880MPa（标准要求≥980MPa），延伸率偏高至18%。\n"
-         "判定：整批次不合格，需退货或降级使用。该批次钢材原计划用于生产出口德国传动轴（订单号"
-         "EXP-2026-0089），交期5月25日，若退货换料将导致交期延误至少15天，面临空运费及违约金。"
-         "建议采购部与武钢紧急协调换货或从其他钢厂调货。"),
+         "检验结果：抽样5件检测硬度，要求HRC 28-32，实测值全部低于下限。"
+         "该批次钢材原计划用于生产出口德国传动轴，若退货换料将导致交期延误至少15天。",
+         None, None, "MAT-001"),
 
         ("WO-20260502-007", "成品抽检发现密封圈装配方向错误",
          "质量异常", "处理中", "紧急",
          "王桂芳", "2026-05-02",
          "产品：液压油缸总成 HC63-350 | 批次：20260501-02批（共计420件）\n"
-         "问题描述：成品抽检20件中发现3件活塞密封圈（Y型圈）唇口方向装反，"
-         "正确方向应为唇口朝向高压侧。装反后密封圈在工作压力超过12MPa时会翻转失效，"
-         "导致油缸内泄、出力不足，严重时可能造成活塞杆弹出安全事故。\n"
-         "溯源：该批次由装配线B班完成（5月1日夜班），经调取装配作业指导书和培训记录，"
-         "发现2名新入职员工未通过密封圈装配专项考核即上岗操作。\n"
-         "处置：该批次420件全部隔离，需逐件拆检确认密封圈方向，预计返工工时160小时。"
-         "已通知生产部暂停B班相关工序，安排全员复训考核。"),
+         "问题描述：成品抽检20件中发现3件活塞密封圈（Y型圈）唇口方向装反。\n"
+         "溯源：该批次由装配线B班完成，发现2名新入职员工未通过密封圈装配专项考核即上岗操作。\n"
+         "处置：该批次420件全部隔离，需逐件拆检确认密封圈方向，预计返工工时160小时。",
+         None, "LINE-002", "MAT-002"),
 
         ("WO-20260425-008", "电镀件盐雾试验96小时出现锈点",
          "质量异常", "已解决", "高",
          "王桂芳", "2026-04-25",
          "产品：户外设备安装支架（表面处理：镀锌+钝化）| 批次：20260415-A\n"
          "试验结果：按GB/T 10125标准进行中性盐雾试验，72小时检查无异常，"
-         "96小时检查发现3件样品边缘及螺纹孔处出现点状红锈（≥5个锈点/件），"
-         "不满足客户要求的120小时无红锈标准。\n"
-         "根因分析：电镀线镀液分析显示光亮剂浓度偏低（正常值2.5-3.5ml/L，实测1.8ml/L），"
-         "且钝化槽液pH值偏高（正常1.8-2.2，实测2.8），导致钝化膜不致密。"
-         "该批次电镀时正值夜班交接班，操作工未按时补加光亮剂和调整钝化液。\n"
-         "整改措施：重新调整镀液成分，该批次1100件全部重镀处理，"
-         "建立镀液参数每2小时检测一次的加严管控措施，增加交接班复测流程。"),
+         "96小时检查发现3件样品边缘及螺纹孔处出现点状红锈，不满足客户要求的120小时无红锈标准。\n"
+         "根因分析：电镀线镀液分析显示光亮剂浓度偏低，且钝化槽液pH值偏高，导致钝化膜不致密。",
+         None, None, None),
 
         ("WO-20260507-009", "喷漆线产品表面颗粒物投诉 — 客户退货",
          "质量异常", "待处理", "高",
          "", "2026-05-07",
          "客户：三一重工 | 产品：挖掘机驾驶室外覆盖件（批次20260503-C，580件）\n"
-         "投诉内容：客户IQC来料检验发现约30%产品漆面存在手感颗粒物，"
-         "粒径0.1-0.5mm，分布不均匀，其中15件存在明显凸起颗粒（＞0.5mm），判定不合格退货。"
-         "该批次已于5月5日发货，现要求我司3个工作日内回复8D改善报告并承担退货物流费用。\n"
-         "初步排查可疑原因：1) 喷漆房5月3日下午更换了初效过滤棉，安装时可能密封不严；"
-         "2) 当天室外PM10浓度偏高（沙尘天气），新风系统可能引入外界颗粒物；"
-         "3) 烘干段链条润滑油加注过量，高温挥发后凝结在漆面。\n"
-         "待办：喷漆车间全面清洁后做洁净度检测（要求万级），追溯同批次在库品质量状态。"),
+         "投诉内容：客户IQC来料检验发现约30%产品漆面存在手感颗粒物，判定不合格退货。\n"
+         "初步排查可疑原因：1) 喷漆房更换初效过滤棉时安装密封不严；"
+         "2) 当天室外PM10浓度偏高（沙尘天气）；3) 烘干段链条润滑油加注过量。",
+         None, None, None),
 
-        # ===== 安全隐患类 =====
+        # ===== 安全隐患类 (3条) =====
         ("WO-20260503-010", "冲压车间安全光幕被短接 — 重大安全隐患",
          "安全隐患", "已解决", "紧急",
          "赵志强", "2026-05-03",
          "地点：冲压车间2号液压机（设备编号HP-02）| 发现人：安全巡检员周建国\n"
          "隐患描述：5月3日安全巡检中发现HP-02液压机操作侧安全光幕的连接器处被插入一根短接线，"
-         "导致光幕保护功能完全失效，操作工可在光幕被遮挡情况下启动冲压循环。"
-         "该设备吨位315T，合模速度200mm/s，若发生误入冲压区事故后果不堪设想。\n"
-         "调查：经调取监控和询问当班班长，系操作工张某为提高连续冲压效率（安全光幕频繁被"
-         "上下料动作触发导致设备暂停0.5秒/次），私自用导线短接了光幕信号线。\n"
-         "处理：张某已停职接受安全教育和处罚；当班班长连带责任记过；全车间开展安全装置"
-         "保护完整性专项排查；安全光幕接线盒增加防拆铅封；增设光幕旁路检测报警功能。"),
+         "导致光幕保护功能完全失效。该设备吨位315T，合模速度200mm/s。\n"
+         "处理：张某已停职接受安全教育和处罚；全车间开展安全装置保护完整性专项排查。",
+         "EQP-006", None, None),
 
         ("WO-20260508-011", "化学品库有机溶剂泄漏 — 地面防渗层破损",
          "安全隐患", "待处理", "紧急",
          "", "2026-05-08",
          "地点：A3化学品仓库 2号存储区 | 涉及物料：二甲苯（20L桶×8桶）、油漆稀释剂（18L桶×12桶）\n"
-         "隐患描述：5月8日仓管员例行巡查时发现2号存储区地面有刺激性气味，进一步检查发现"
-         "一桶二甲苯（桶号XM-045）底部焊缝处有缓慢渗漏，地面已有约200ml积液，"
-         "且该区域环氧树脂防渗地面存在龟裂缝隙（长约60cm，宽1-3mm），部分溶剂已渗入裂缝中。\n"
-         "环境风险：二甲苯为易燃有毒化学品，蒸气与空气可形成爆炸性混合物，"
-         "渗入地面后可能污染地下水监测井（最近监测井距仓库仅80m）。\n"
-         "紧急处置：立即将泄漏桶转移至防泄漏托盘，用吸液棉清理地面积液，"
-         "隔离2号存储区，挂置「禁止入内」警示牌。需联系环保检测公司对地面下方土壤和"
-         "监测井水质取样检测，评估污染程度。"),
+         "隐患描述：5月8日仓管员例行巡查时发现一桶二甲苯（桶号XM-045）底部焊缝处有缓慢渗漏，"
+         "且该区域环氧树脂防渗地面存在龟裂缝隙（长约60cm）。\n"
+         "紧急处置：立即将泄漏桶转移至防泄漏托盘，用吸液棉清理地面积液，隔离2号存储区。",
+         None, None, "MAT-006"),
 
         ("WO-20260430-012", "叉车充电区通风系统故障 — 氢气积聚风险",
          "安全隐患", "已解决", "高",
          "赵志强", "2026-04-30",
          "地点：物流中心叉车充电间（建筑面积120㎡，配置防爆型轴流风机×2）\n"
-         "隐患描述：4月30日早班，充电间氢气浓度探测器（HA-01）显示浓度达到1.2%LEL"
-         "（正常＜0.2%LEL），触发黄色预警。排查发现一台排风机（EF-02）电机轴承卡死停转，"
-         "另一台EF-01排风量不足额定值的60%（风管滤网严重堵塞）。充电间内有8台铅酸蓄电池叉车"
-         "同时充电，产氢量约2.4m³/h，通风不足情况下氢气容易在屋顶积聚，"
-         "达到4%LEL即可能发生燃爆。\n"
-         "整改：更换EF-02电机轴承并测试正常运行，清洗EF-01风管滤网及叶轮；"
-         "建立风机运行状况每日点检制度；增加氢气探测器定期校准周期为每月一次。"),
+         "隐患描述：4月30日早班，充电间氢气浓度探测器显示浓度达到1.2%LEL（正常＜0.2%LEL），"
+         "触发黄色预警。排查发现一台排风机（EF-02）电机轴承卡死停转。\n"
+         "整改：更换EF-02电机轴承并测试正常运行，建立风机运行状况每日点检制度。",
+         "EQP-009", None, None),
 
-        # ===== 物料短缺类 =====
+        # ===== 物料短缺类 (2条) =====
         ("WO-20260508-013", "关键原材料进口轴承交期延误 — 装配线即将停线",
          "物料短缺", "待处理", "紧急",
          "", "2026-05-08",
          "物料编码：PN-30215-INA | 名称：INA滚子轴承 SL04-5008PP | 单台用量2件\n"
          "供应商：德国舍弗勒（Schaeffler）| 采购方式：独家供应（客户指定品牌）\n"
-         "现状：当前库存仅剩156件，以日均消耗28件计算，仅可维持5.6天生产。"
-         "原计划5月6日到货的320件因国际空运航班延误（法兰克福机场罢工）推迟至5月14日，"
-         "预计库存将在5月13日耗尽。\n"
-         "影响产线：该轴承用于减速机总成装配线（日产14台，单台产值￥3.2万元），"
-         "若停线每天直接产值损失约￥44.8万元。\n"
-         "替代方案：德国供应商同意从新加坡亚太仓库紧急空运120件作为过渡（预计5月11日到），"
-         "但单价上浮25%。需供应链总监在4小时内批复紧急采购申请。"),
+         "现状：当前库存仅剩156件，以日均消耗28件计算，仅可维持5.6天生产。\n"
+         "影响产线：该轴承用于减速机总成装配线（日产14台，单台产值￥3.2万元）。",
+         None, "LINE-003", "MAT-003"),
 
         ("WO-20260428-014", "钢材库盘点差异 — 304不锈钢板账实不符",
          "物料短缺", "处理中", "高",
          "陈晓东", "2026-04-28",
          "物料：304冷轧不锈钢板 2.0×1500×3000mm | SAP编码：RM-304-2.0\n"
          "问题：月度盘点发现该物料ERP系统账面库存为1,280张，实际盘点仅1,102张，"
-         "短缺178张（约12.7吨），按市价￥22,800/吨计算，库存差异金额约￥28.95万元。\n"
-         "排查：正在逐笔核查4月份该物料所有出入库单据（包括生产领用、委外加工发出、"
-         "样品领用、报废记录），同时调取1号钢材库4月份全部监控录像进行回溯比对。"
-         "初步怀疑部分车间开具内部移库单但实物未办理系统过账，或移库过程中串号。\n"
-         "待办：财务待盘点结果确认后进行库存调整，同步启动内控流程审查。"),
+         "短缺178张（约12.7吨），按市价￥22,800/吨计算，库存差异金额约￥28.95万元。",
+         None, None, "MAT-004"),
 
-        # ===== 工艺问题类 =====
+        # ===== 工艺问题类 (2条) =====
         ("WO-20260504-015", "热处理淬火后工件变形率超标 — 曲轴产品",
          "工艺问题", "处理中", "高",
          "刘红梅", "2026-05-04",
          "产品：六缸柴油机曲轴（锻钢42CrMo）| 工序：调质处理（淬火+高温回火）\n"
          "问题：5月份以来连续3批次（共计72件）曲轴在淬火后检测直线度，变形量＞0.5mm的"
-         "比例从正常≤3%升高至18.5%（13件超差），超差件需增加校直工序，"
-         "每件校直额外耗时45分钟且存在校裂报废风险（报废率约5%）。\n"
-         "工艺参数排查：淬火油温正常（60±5℃）、工件入油方式正常（垂直悬挂）、"
-         "加热温度曲线正常（850℃×2h）。但在调取加热炉炉温均匀性记录时发现，"
-         "炉膛中区与边区的温差最大达±15℃（标准要求±8℃以内），导致工件加热不均匀。\n"
-         "下一步：联系炉子厂家进行炉温均匀性检测和校正；先降低装炉量至70%以减小温差。"),
+         "比例从正常≤3%升高至18.5%。\n"
+         "工艺参数排查：炉膛中区与边区的温差最大达±15℃（标准要求±8℃以内）。",
+         None, None, "MAT-001"),
 
         ("WO-20260422-016", "SMT贴片线回流焊温度曲线漂移 — 虚焊率上升",
          "工艺问题", "已解决", "高",
          "刘红梅", "2026-04-22",
          "产线：SMT Line-3 | 产品：电机控制器PCB（12层板，BGA封装MCU）\n"
-         "问题：4月20日起AOI检测直通率从98.5%下降至94.2%，不良品主要集中在BGA焊点"
-         "虚焊和QFP引脚少锡，经X-Ray确认有微裂纹和冷焊现象。\n"
-         "分析：对比4月18日和4月20日的回流焊温度曲线记录，发现恒温区（150-180℃）"
-         "时间从正常的90±10秒缩短至55-65秒，峰值温度从245±3℃降至231-236℃，"
-         "低于锡膏（Alpha OM-340）推荐峰值温度范围240-250℃。\n"
-         "根因：回流焊炉第3温区上加热模组的热电偶断裂，导致该区实际温度比设定值低约25℃，"
-         "PLC未检测到异常（热电偶开路时的默认值为设定值）。\n"
-         "整改：更换热电偶并重新校准8个温区温度曲线，增加AOI抽检频次至每小时5片。"),
+         "问题：4月20日起AOI检测直通率从98.5%下降至94.2%，不良品主要集中在BGA焊点虚焊和QFP引脚少锡。\n"
+         "根因：回流焊炉第3温区上加热模组的热电偶断裂，导致该区实际温度比设定值低约25℃。",
+         "EQP-007", "LINE-004", None),
 
-        # ===== 生产计划类 =====
+        # ===== 生产计划类 (2条) =====
         ("WO-20260508-017", "紧急插单：客户加急订单需调整排产计划",
          "生产计划", "待处理", "高",
          "", "2026-05-08",
          "客户：卡特彼勒（徐州）有限公司 | 订单号：CAT-2026-0512-RUSH\n"
-         "需求：原计划6月15日交付的120台装载机变速箱体总成，需提前至5月25日交付60台"
-         "（海运船期提前），剩余60台维持原交期不变。\n"
-         "产能影响评估：5月份3条加工中心产线已满负荷排产至5月28日，当前订单（含本批）"
-         "总产能需求为设计产能的108%。如接受加急，需：\n"
-         "1) 5月12日至24日期间安排周末加班2天（需支付双倍工资约￥4.6万元）\n"
-         "2) 将非紧急订单（WO-2026-0325-01）60件延后一周\n"
-         "3) 外协加工商（徐州恒力机械）承接其中15台箱体粗加工（外协费增加￥3.2万）\n"
-         "需生产总监在今天下班前确认是否接受此加急订单。"),
+         "需求：原计划6月15日交付的120台装载机变速箱体总成，需提前至5月25日交付60台。\n"
+         "产能影响评估：5月份3条加工中心产线已满负荷排产至5月28日，当前订单总产能需求为设计产能的108%。",
+         None, "LINE-001", None),
 
         ("WO-20260419-018", "月度设备保养计划与交付任务冲突",
          "生产计划", "已关闭", "中",
          "李明辉", "2026-04-19",
          "背景：按年度计划，4月25日-27日为全厂设备季度保养窗口（需全线停产2天），"
-         "但销售部4月18日确认了一笔日本客户（小松制作所）的试制订单，要求4月28日前"
-         "完成20件样品并发货。\n"
+         "但销售部4月18日确认了一笔日本客户（小松制作所）的试制订单，要求4月28日前完成20件样品并发货。\n"
          "协调结果：设备保养调整为4月25日完成3条主产线保养（单日加班至22:00），"
-         "4月26日-27日利用已完成保养的产线排产样品，4月26日-28日对其余设备进行保养。"
-         "设备部、生产部、销售部三方已签字确认。"),
+         "4月26日-27日利用已完成保养的产线排产样品。",
+         None, None, None),
 
-        # ===== 环境监测类 =====
+        # ===== 环境监测类 (2条) =====
         ("WO-20260507-019", "涂装车间VOCs排放浓度在线监测数据超标",
          "环境监测", "待处理", "紧急",
          "", "2026-05-07",
          "监测点：涂装车间废气排放口DA-002 | 监管标准：GB 37822-2019 表1限值\n"
-         "异常记录：5月7日14:00-16:00时段，在线监测系统（CEMS）连续记录VOCs排放浓度"
-         "为168-210mg/m³，超过60mg/m³的排放限值。同时非甲烷总烃（NMHC）浓度也上升至132mg/m³"
-         "（限值100mg/m³）。该数据已自动上传至市生态环境局监控平台，可能触发环保执法检查。\n"
-         "排查方向：可能为活性炭吸附装置（AC-02）吸附饱和，该活性炭已使用约11个月（设计更换"
-         "周期12个月），近期喷漆量增加（加班赶货）导致处理负荷加大。\n"
-         "紧急措施：降低喷漆线产能至60%，减少VOCs产生量；立即安排活性炭更换作业。"),
+         "异常记录：5月7日14:00-16:00时段，在线监测系统连续记录VOCs排放浓度"
+         "为168-210mg/m³，超过60mg/m³的排放限值。\n"
+         "紧急措施：降低喷漆线产能至60%，减少VOCs产生量；立即安排活性炭更换作业。",
+         "EQP-010", None, None),
 
         ("WO-20260427-020", "冷却循环水系统藻类滋生 — 换热效率下降",
          "环境监测", "已解决", "中",
          "陈晓东", "2026-04-27",
          "系统：全厂闭式冷却水循环系统（保有水量80m³，冷却塔CT-01/02）\n"
          "问题：冷却塔出水温度从正常的32℃逐渐上升至38-40℃，导致冷水机组COP下降、"
-         "制冷电耗增加约15%。开塔检查发现填料层有绿色藻类附着，水池底部有粘泥沉积，"
-         "浊度从正常＜5NTU上升至25NTU。\n"
-         "原因：4月份气温回升快（日均温28℃），阳光直射冷却塔水池促进了藻类繁殖；"
-         "同时杀菌剂（异噻唑啉酮）投加量未随温度升高及时调整。\n"
-         "处置：系统排水清洗、高压水枪冲洗填料、更换水池底泥；调整杀菌剂投加方案为"
-         "夏季模式（浓度提高至15ppm、投加频次每周2次）；加装冷却塔遮阳网。"),
+         "制冷电耗增加约15%。\n"
+         "原因：4月份气温回升快（日均温28℃），阳光直射冷却塔水池促进了藻类繁殖。",
+         None, None, None),
+
+        # ===== v3.3 新增工单 (7条) =====
+        ("WO-20260509-021", "涂装机器人3号臂喷涂不均匀 — 漆膜厚度超标",
+         "设备故障", "处理中", "高",
+         "张建国", "2026-05-09",
+         "设备编号：PT-R03 | 型号：ABB IRB 5500 | 安装日期：2020-06\n"
+         "故障现象：涂装机器人3号臂在喷涂大型覆盖件时出现漆膜厚度不均匀，"
+         "膜厚偏差从正常的±5μm扩大至±18μm，导致面漆光泽度不一致。\n"
+         "初步排查：机器人腕部齿轮箱背隙可能增大，需检测重复定位精度。",
+         "EQP-010", None, None),
+
+        ("WO-20260510-022", "外协加工件尺寸超差 — 批量退货",
+         "质量异常", "待处理", "紧急",
+         "", "2026-05-10",
+         "外协商：徐州恒力机械 | 物料：变速箱体粗加工件 | 批次：XZ-2026-0508\n"
+         "问题：IQC检验发现50件中有12件关键尺寸（轴承孔Φ120H7）超上差+0.025mm，"
+         "无法进入精加工工序。该批共300件，需全检并返工或退货。\n"
+         "影响：若退货将导致装配线待料停产，需紧急协调其他外协商补货。",
+         None, None, None),
+
+        ("WO-20260511-023", "数控磨床砂轮动平衡失效 — 加工表面振纹",
+         "设备故障", "已解决", "高",
+         "李明辉", "2026-05-11",
+         "设备编号：CG-04 | 型号：Studer S41 | 加工产品：精密主轴\n"
+         "故障现象：磨削加工后工件表面出现规律性振纹（间距约3mm），粗糙度Ra从正常0.2μm升至0.8μm。\n"
+         "根因：砂轮动平衡块在高速旋转中微量位移，导致动平衡精度从G1级降为G6.3级。\n"
+         "整改：重新进行砂轮动平衡校正，建立每班次动平衡点检制度。",
+         None, None, None),
+
+        ("WO-20260512-024", "装配线气动扳手扭力不足 — 螺栓锁紧不合格",
+         "设备故障", "待处理", "高",
+         "", "2026-05-12",
+         "设备：Atlas Copco 气动扭力扳手 TQ-03 | 所属空压机站 AC-02 供气\n"
+         "问题：5号总装线早班巡检发现气动扳手输出扭力从标准180Nm下降至145-155Nm，"
+         "导致M16螺栓锁紧力矩不足，在线扭矩监控系统连续报警12次。\n"
+         "初步排查：关联空压机AC-02跳闸问题导致供气管路压力波动。",
+         "EQP-003", None, None),
+
+        ("WO-20260513-025", "磷化线槽液参数异常 — 磷化膜结晶粗大",
+         "工艺问题", "处理中", "中",
+         "刘红梅", "2026-05-13",
+         "产线：磷化处理线 PL-02 | 槽液：锌系磷化液（总酸度/游离酸度/促进剂浓度）\n"
+         "问题：连续2天磷化膜SEM检测显示结晶粗大（正常晶粒3-8μm，实际15-25μm），"
+         "膜重从正常2.5g/m²升至4.2g/m²，可能导致后续电泳附着力下降。\n"
+         "排查方向：槽液游离酸度偏高（正常0.8-1.2点，实测1.8点），需调整中和。",
+         None, None, None),
+
+        ("WO-20260514-026", "成品库恒温恒湿系统故障 — 精密件表面凝露",
+         "环境监测", "待处理", "紧急",
+         "", "2026-05-14",
+         "地点：成品库2号恒温恒湿仓 | 库存：精密轴承、伺服电机等（总值约￥380万）\n"
+         "问题：5月14日凌晨湿度传感器显示相对湿度从45%骤升至82%，温度波动±5℃，"
+         "导致部分精密件包装内出现凝露。空调机组制冷剂泄漏，压缩机低压保护停机。\n"
+         "紧急措施：转移高价值库存至备用仓，联系空调维修商紧急补漏充氟。",
+         None, None, None),
+
+        ("WO-20260515-027", "供应商来料包装破损率突然升高 — 运输环节排查",
+         "物料短缺", "待处理", "中",
+         "陈晓东", "2026-05-15",
+         "供应商：鞍钢集团 | 物料：45#调质钢棒材 | 运输方式：公路货运\n"
+         "问题：5月份以来连续3车次到货时发现包装木箱破损率达35%（正常≤5%），"
+         "导致棒材表面划伤、端部磕碰，影响后续加工。\n"
+         "排查方向：更换货运承包商后的运输加固方案是否合规，包装木箱强度是否达标。",
+         None, None, "MAT-005"),
     ]
 
     conn.executemany(
-        "INSERT INTO tickets (ticket_id, title, type, status, priority, assignee, created_at, updated_at, description) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [(t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[6], t[7]) for t in tickets],
+        "INSERT OR IGNORE INTO tickets (ticket_id, title, type, status, priority, assignee, created_at, updated_at, description, equipment_id, line_id, material_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[6], t[7], t[8], t[9], t[10]) for t in tickets],
+    )
+    # v3.3: 当天日期工单（动态生成，含 FK 引用）
+    from datetime import datetime as dt
+    today_str = dt.now().strftime("%Y-%m-%d")
+    today_prefix = today_str.replace("-", "")
+    today_tickets = [
+        ("WO-{}-T01".format(today_prefix), "今日紧急：涂装车间VOCs排放在线监测数据超标",
+         "环境监测", "待处理", "紧急",
+         "", today_str,
+         "监测点：涂装车间废气排放口DA-002 | 监管标准：GB 37822-2019\n"
+         "异常记录：今日14:00-16:00时段，VOCs排放浓度超60mg/m³限值。\n"
+         "紧急措施：降低喷漆线产能至60%，安排活性炭更换作业。",
+         "EQP-010", None, None),
+        ("WO-{}-T02".format(today_prefix), "今日新增：CNC加工中心主轴冷却系统报警",
+         "设备故障", "待处理", "高",
+         "", today_str,
+         "设备编号：CNC-MC-007 | 型号：DMG MORI DMU 50\n"
+         "故障现象：主轴冷却液温度异常升高至42℃（正常范围25-35℃），触发黄色预警。\n"
+         "初步判断：冷却液循环泵流量不足或热交换器堵塞。需安排停机检修。",
+         "EQP-008", None, None),
+        ("WO-{}-T03".format(today_prefix), "今日新增：来料检验批次钢材硬度偏低",
+         "质量异常", "待处理", "高",
+         "", today_str,
+         "供应商：鞍钢集团 | 物料：45#调质钢棒材 Φ80×3000mm | 批次号：AG-2026-0515-C02\n"
+         "检验结果：抽样硬度要求HRC 22-28，实测值偏低，需技术评审决定让步接收或退货。",
+         None, None, "MAT-005"),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO tickets (ticket_id, title, type, status, priority, assignee, created_at, updated_at, description, equipment_id, line_id, material_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[6], t[7], t[8], t[9], t[10]) for t in today_tickets],
     )
     conn.commit()
-    logger.info(f"已填入 {len(tickets)} 条真实工厂场景种子工单")
+    logger.info(f"已填充 {len(tickets)} 条历史工单 + {len(today_tickets)} 条今日工单")
 
 
-# ============================================================
-# 查询函数
-# ============================================================
+def _seed_equipment(conn: sqlite3.Connection) -> None:
+    """填入设备种子数据。"""
+    equipment = [
+        ("EQP-001", "CNC加工中心(3号线)", "DMG MORI DMU 50", "2019-03", "12000h", "DMG MORI"),
+        ("EQP-002", "注塑机(6号)", "海天MA3200", "2020-05", "8000h", "海天"),
+        ("EQP-003", "空压机(2号)", "Atlas Copco GA90", "2018-10", "15000h", "Atlas Copco"),
+        ("EQP-004", "AGV搬运车(5号)", "海康威视MR-Q3-300", "2021-02", "6000h", "海康威视"),
+        ("EQP-005", "焊接机器人(WR-02)", "FANUC R-2000iC/210F", "2020-08", "10000h", "FANUC"),
+        ("EQP-006", "液压机(2号,HP-02)", "315T四柱液压机", "2017-06", "20000h", "合肥锻压"),
+        ("EQP-007", "SMT贴片线(Line-3)", "Yamaha YSM20R", "2021-06", "5000h", "Yamaha"),
+        ("EQP-008", "CNC加工中心(CNC-MC-007)", "DMG MORI DMU 50", "2019-06", "11000h", "DMG MORI"),
+        ("EQP-009", "排风机(EF-01/EF-02)", "防爆型轴流风机", "2019-03", "15000h", "上风高科"),
+        ("EQP-010", "涂装机器人(PT-R03)/活性炭吸附(AC-02)", "ABB IRB 5500", "2020-06", "9000h", "ABB"),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO equipment (equipment_id, name, model, install_date, mtbf, supplier) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        equipment,
+    )
+    conn.commit()
+    logger.info(f"已填充 {len(equipment)} 条设备数据")
+
+
+def _seed_production_lines(conn: sqlite3.Connection) -> None:
+    """填入产线种子数据。"""
+    lines = [
+        ("LINE-001", "3号生产线", "壳体精加工", 280),
+        ("LINE-002", "装配线B班", "液压油缸总成HC63-350", 420),
+        ("LINE-003", "减速机总成装配线", "减速机总成", 14),
+        ("LINE-004", "SMT产线3号", "电机控制器PCB(12层)", 200),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO production_lines (line_id, name, product, daily_capacity) "
+        "VALUES (?, ?, ?, ?)",
+        lines,
+    )
+    conn.commit()
+    logger.info(f"已填充 {len(lines)} 条产线数据")
+
+
+def _seed_materials(conn: sqlite3.Connection) -> None:
+    """填入物料种子数据。"""
+    materials = [
+        ("MAT-001", "40Cr调质钢棒材", "Φ60×3000mm", "武汉钢铁集团", "¥12.50/kg"),
+        ("MAT-002", "Y型密封圈(活塞)", "NBR丁腈橡胶", "广州密封件厂", "¥3.20/件"),
+        ("MAT-003", "INA滚子轴承", "SL04-5008PP", "德国舍弗勒", "¥1,850/件"),
+        ("MAT-004", "304冷轧不锈钢板", "2.0×1500×3000mm", "太钢不锈", "¥22,800/吨"),
+        ("MAT-005", "45#调质钢棒材", "Φ80×3000mm", "鞍钢集团", "¥8.60/kg"),
+        ("MAT-006", "二甲苯(溶剂)", "20L/桶 工业级", "中石化巴陵", "¥285/桶"),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO materials (material_id, name, spec, supplier, unit_price) "
+        "VALUES (?, ?, ?, ?, ?)",
+        materials,
+    )
+    conn.commit()
+    logger.info(f"已填充 {len(materials)} 条物料数据")
+
+
+def _seed_quality_metrics(conn: sqlite3.Connection) -> None:
+    """填入质量指标种子数据。"""
+    metrics = [
+        ("WO-20260501-005", 5.7, 0),
+        ("WO-20260502-007", 3.0 / 420 * 100, 160),
+        ("WO-20260504-015", 18.5, 45 * 13 / 60),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO quality_metrics (ticket_id, defect_rate, rework_hours) "
+        "VALUES (?, ?, ?)",
+        metrics,
+    )
+    conn.commit()
+    logger.info(f"已填充 {len(metrics)} 条质量指标数据")
+
+
+def _seed_db_schema_info(conn: sqlite3.Connection) -> None:
+    """填入数据库 Schema 元数据（供 get_schema 工具使用）。"""
+    from datetime import datetime as dt
+    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    schemas = [
+        ("tickets", "id", "INTEGER", 0, 1, "主键自增ID"),
+        ("tickets", "ticket_id", "TEXT", 0, 0, "工单唯一编号，格式 WO-YYYYMMDD-NNN"),
+        ("tickets", "title", "TEXT", 0, 0, "工单标题"),
+        ("tickets", "type", "TEXT", 0, 0, "工单类型：设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测"),
+        ("tickets", "status", "TEXT", 0, 0, "工单状态：待处理/处理中/已解决/已关闭"),
+        ("tickets", "priority", "TEXT", 0, 0, "优先级：紧急/高/中/低"),
+        ("tickets", "assignee", "TEXT", 1, 0, "处理人姓名"),
+        ("tickets", "created_at", "TEXT", 0, 0, "创建日期 YYYY-MM-DD"),
+        ("tickets", "updated_at", "TEXT", 0, 0, "最后更新日期"),
+        ("tickets", "description", "TEXT", 0, 0, "工单详细描述"),
+        ("ticket_replies", "id", "INTEGER", 0, 1, "主键自增ID"),
+        ("ticket_replies", "ticket_id", "TEXT", 0, 0, "关联工单编号"),
+        ("ticket_replies", "content", "TEXT", 0, 0, "回复内容"),
+        ("ticket_replies", "created_at", "TEXT", 0, 0, "回复时间"),
+        ("conversations", "id", "INTEGER", 0, 1, "主键自增ID"),
+        ("conversations", "title", "TEXT", 0, 0, "对话标题"),
+        ("conversations", "created_at", "TEXT", 0, 0, "创建时间"),
+        ("conversations", "updated_at", "TEXT", 0, 0, "最后更新时间"),
+        ("conversations", "pinned", "INTEGER", 0, 0, "是否置顶 0/1"),
+        ("conversation_messages", "id", "INTEGER", 0, 1, "主键自增ID"),
+        ("conversation_messages", "conversation_id", "INTEGER", 0, 0, "关联对话ID"),
+        ("conversation_messages", "role", "TEXT", 0, 0, "消息角色 user/assistant"),
+        ("conversation_messages", "content", "TEXT", 0, 0, "消息内容"),
+        ("conversation_messages", "steps", "TEXT", 1, 0, "推理步骤 JSON"),
+        ("conversation_messages", "created_at", "TEXT", 0, 0, "消息时间"),
+        ("agent_actions", "id", "INTEGER", 0, 1, "主键自增ID"),
+        ("agent_actions", "action_type", "TEXT", 0, 0, "操作类型：sql/python/tool"),
+        ("agent_actions", "action_name", "TEXT", 0, 0, "操作名称"),
+        ("agent_actions", "input_params", "TEXT", 1, 0, "输入参数 JSON"),
+        ("agent_actions", "output_summary", "TEXT", 1, 0, "输出摘要"),
+        ("agent_actions", "status", "TEXT", 0, 0, "执行状态 success/error"),
+        ("agent_actions", "error_message", "TEXT", 1, 0, "错误信息"),
+        ("agent_actions", "elapsed_ms", "REAL", 1, 0, "耗时毫秒"),
+        ("agent_actions", "created_at", "TEXT", 0, 0, "执行时间"),
+        ("agent_actions", "conversation_id", "INTEGER", 1, 0, "关联对话ID"),
+        ("sql_templates", "id", "INTEGER", 0, 1, "主键自增ID"),
+        ("sql_templates", "name", "TEXT", 0, 0, "模板唯一名称"),
+        ("sql_templates", "sql_text", "TEXT", 0, 0, "SQL 语句"),
+        ("sql_templates", "description", "TEXT", 1, 0, "模板描述"),
+        ("sql_templates", "category", "TEXT", 1, 0, "分类"),
+        ("sql_templates", "is_safe", "INTEGER", 0, 0, "是否安全 0/1"),
+        ("sql_templates", "use_count", "INTEGER", 0, 0, "使用次数"),
+        ("sql_templates", "created_at", "TEXT", 0, 0, "创建时间"),
+        ("correction_rules", "id", "INTEGER", 0, 1, "主键自增ID"),
+        ("correction_rules", "error_pattern", "TEXT", 0, 0, "错误模式"),
+        ("correction_rules", "rule_description", "TEXT", 0, 0, "规则描述"),
+        ("correction_rules", "fix_template", "TEXT", 1, 0, "修复模板"),
+        ("correction_rules", "confidence", "REAL", 0, 0, "置信度 0-1"),
+        ("correction_rules", "source_action_id", "INTEGER", 1, 0, "来源操作ID"),
+        ("correction_rules", "created_at", "TEXT", 0, 0, "创建时间"),
+        # v3.3 领域表 FK 列
+        ("tickets", "equipment_id", "TEXT", 1, 0, "关联设备ID FK → equipment"),
+        ("tickets", "line_id", "TEXT", 1, 0, "关联产线ID FK → production_lines"),
+        ("tickets", "material_id", "TEXT", 1, 0, "关联物料ID FK → materials"),
+        # v3.3 领域表
+        ("equipment", "equipment_id", "TEXT", 0, 1, "设备唯一编号"),
+        ("equipment", "name", "TEXT", 0, 0, "设备名称"),
+        ("equipment", "model", "TEXT", 1, 0, "设备型号"),
+        ("equipment", "install_date", "TEXT", 1, 0, "安装日期"),
+        ("equipment", "mtbf", "TEXT", 1, 0, "平均故障间隔"),
+        ("equipment", "supplier", "TEXT", 1, 0, "供应商"),
+        ("production_lines", "line_id", "TEXT", 0, 1, "产线唯一编号"),
+        ("production_lines", "name", "TEXT", 0, 0, "产线名称"),
+        ("production_lines", "product", "TEXT", 1, 0, "主要产品"),
+        ("production_lines", "daily_capacity", "INTEGER", 1, 0, "日产能"),
+        ("materials", "material_id", "TEXT", 0, 1, "物料唯一编号"),
+        ("materials", "name", "TEXT", 0, 0, "物料名称"),
+        ("materials", "spec", "TEXT", 1, 0, "规格"),
+        ("materials", "supplier", "TEXT", 1, 0, "供应商"),
+        ("materials", "unit_price", "TEXT", 1, 0, "单价"),
+        ("quality_metrics", "metric_id", "INTEGER", 0, 1, "指标自增ID"),
+        ("quality_metrics", "ticket_id", "TEXT", 0, 0, "关联工单编号 FK → tickets"),
+        ("quality_metrics", "defect_rate", "REAL", 1, 0, "不良率 %"),
+        ("quality_metrics", "rework_hours", "REAL", 1, 0, "返工工时"),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO db_schema_info (table_name, column_name, data_type, is_nullable, is_primary_key, description) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        schemas,
+    )
+    conn.commit()
+    logger.info(f"已填充 {len(schemas)} 条 Schema 元数据")
+
+
+def _seed_sql_templates(conn: sqlite3.Connection) -> None:
+    """填入预验证 SQL 模板（供 execute_sql 参考）。"""
+    from datetime import datetime as dt
+    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    templates = [
+        ("today_tickets", "SELECT * FROM tickets WHERE created_at = date('now')", "查询今日工单", "查询", 1),
+        ("urgent_unassigned", "SELECT * FROM tickets WHERE priority IN ('紧急','高') AND status IN ('待处理','处理中') AND assignee = '' ORDER BY CASE priority WHEN '紧急' THEN 0 ELSE 1 END, created_at DESC", "紧急未分配工单", "查询", 1),
+        ("type_distribution", "SELECT type, COUNT(*) as cnt FROM tickets GROUP BY type ORDER BY cnt DESC", "工单类型分布", "统计", 1),
+        ("status_summary", "SELECT status, COUNT(*) as cnt FROM tickets GROUP BY status ORDER BY cnt DESC", "工单状态汇总", "统计", 1),
+        ("weekly_new", "SELECT * FROM tickets WHERE created_at >= date('now', '-7 days') ORDER BY created_at DESC", "近7天新增工单", "查询", 1),
+        ("stale_tickets", "SELECT * FROM tickets WHERE status = '待处理' AND created_at <= date('now', '-7 days') ORDER BY created_at", "积压超过7天的工单", "查询", 1),
+        ("assignee_workload", "SELECT assignee, COUNT(*) as cnt FROM tickets WHERE status IN ('待处理','处理中') AND assignee != '' GROUP BY assignee ORDER BY cnt DESC", "处理人工作量", "统计", 1),
+        ("recent_solved", "SELECT * FROM tickets WHERE status = '已解决' ORDER BY updated_at DESC LIMIT 10", "最近已解决工单", "查询", 1),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO sql_templates (name, sql_text, description, category, is_safe, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [(t[0], t[1], t[2], t[3], t[4], now) for t in templates],
+    )
+    conn.commit()
+    logger.info(f"已填充 {len(templates)} 条 SQL 模板")
+
+
+def _seed_correction_rules(conn: sqlite3.Connection) -> None:
+    """填入初始自校正规则。"""
+    from datetime import datetime as dt
+    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    rules = [
+        ("SQL 语法错误 near", "检查 SQL 语句中的关键字拼写和引号匹配", "修正 SQL 语法后重试执行", 0.8),
+        ("no such table", "确认表名拼写正确，使用 get_schema 查看可用表名", "使用 SELECT name FROM sqlite_master WHERE type='table' 获取表列表", 0.9),
+        ("no such column", "确认列名拼写正确，使用 get_schema 查看表结构", "使用 PRAGMA table_info(表名) 获取列列表", 0.9),
+        ("UNIQUE constraint failed", "数据已存在，使用 UPDATE 或跳过该记录", "改用 INSERT OR IGNORE 或先检查是否存在", 0.85),
+        ("日期格式无效", "日期参数需使用 YYYY-MM-DD 格式", "使用 date('now') 或 strftime('%Y-%m-%d') 获取正确格式", 0.8),
+        ("工具执行超时", "简化查询条件或增加超时时间", "添加 LIMIT 限制返回行数或缩小日期范围", 0.7),
+        ("工具执行失败.*已降级", "该工具连续失败已被熔断，跳过本次调用", "等待下一轮对话自动恢复，或手动重置熔断器", 0.75),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO correction_rules (error_pattern, rule_description, fix_template, confidence, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [(r[0], r[1], r[2], r[3], now) for r in rules],
+    )
+    conn.commit()
+    logger.info(f"已填充 {len(rules)} 条自校正规则")
 
 def query_tickets_db(
     ticket_type: str | None = None,

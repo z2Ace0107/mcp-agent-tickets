@@ -168,3 +168,176 @@ def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
         }
     except Exception as e:
         return {"query": query, "results": [], "error": f"搜索失败: {str(e)}"}
+
+
+# ============================================================
+# v3.3 新增工具：Schema / SQL / Python
+# ============================================================
+
+def get_schema(table_name: str | None = None) -> dict[str, Any]:
+    """获取数据库表结构信息。
+
+    Args:
+        table_name: 表名，可选。为 None 时返回所有表概览。
+
+    Returns:
+        {"tables": [...], "columns": [...]} 或单表详情
+    """
+    from backend.database import get_connection
+    conn = get_connection()
+    try:
+        if table_name:
+            rows = conn.execute(
+                "SELECT * FROM db_schema_info WHERE table_name = ? ORDER BY is_primary_key DESC, id",
+                (table_name,),
+            ).fetchall()
+            if not rows:
+                # 回退：检查 sqlite_master
+                table_check = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (table_name,),
+                ).fetchone()
+                if not table_check:
+                    return {"error": f"表不存在: {table_name}"}
+                # 用 PRAGMA 获取列信息
+                pragma_rows = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+                columns = [
+                    {"column_name": r["name"], "data_type": r["type"],
+                     "is_nullable": not r["notnull"], "is_primary_key": bool(r["pk"])}
+                    for r in pragma_rows
+                ]
+                return {"table_name": table_name, "columns": columns, "source": "pragma"}
+            return {
+                "table_name": table_name,
+                "columns": [
+                    {"column_name": r["column_name"], "data_type": r["data_type"],
+                     "is_nullable": bool(r["is_nullable"]), "is_primary_key": bool(r["is_primary_key"]),
+                     "description": r["description"]}
+                    for r in rows
+                ],
+                "source": "db_schema_info",
+            }
+        else:
+            # 返回所有表概览
+            table_rows = conn.execute(
+                "SELECT DISTINCT table_name FROM db_schema_info ORDER BY table_name"
+            ).fetchall()
+            tables = []
+            for tr in table_rows:
+                tn = tr["table_name"]
+                col_count = conn.execute(
+                    "SELECT COUNT(*) FROM db_schema_info WHERE table_name = ?", (tn,)
+                ).fetchone()[0]
+                tables.append({"table_name": tn, "column_count": col_count})
+            return {"tables": tables}
+    finally:
+        conn.close()
+
+
+def execute_sql(sql: str) -> dict[str, Any]:
+    """执行只读 SQL 查询（仅允许 SELECT/PRAGMA）。
+
+    Args:
+        sql: SQL 查询语句，必填。仅允许 SELECT 和 PRAGMA 语句。
+
+    Returns:
+        {"columns": [...], "rows": [...], "row_count": int}
+    """
+    import re
+    from backend.database import get_connection
+
+    cleaned = sql.strip().rstrip(";").strip()
+    if not cleaned:
+        return {"error": "SQL 语句为空"}
+
+    # 安全检查：仅允许 SELECT 和 PRAGMA
+    first_word = re.split(r'\s+', cleaned.upper())[0]
+    allowed = {"SELECT", "PRAGMA", "EXPLAIN", "WITH"}
+    if first_word not in allowed:
+        return {
+            "error": f"仅允许只读查询（SELECT/PRAGMA/EXPLAIN/WITH），不支持: {first_word}",
+            "allowed_operations": list(allowed),
+        }
+
+    conn = get_connection()
+    try:
+        cursor = conn.execute(cleaned)
+        columns = [d[0] for d in cursor.description] if cursor.description else []
+        rows = [dict(r) for r in cursor.fetchall()]
+        return {
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+        }
+    except Exception as e:
+        return {"error": f"SQL 执行失败: {str(e)}", "sql": cleaned[:200]}
+    finally:
+        conn.close()
+
+
+def execute_python(code: str) -> dict[str, Any]:
+    """在受限沙箱中执行 Python 代码片段（用于数据分析）。
+
+    可用预导入模块: json, datetime, math, statistics, collections, itertools
+    内置 print() 输出将被捕获到 stdout。
+
+    Args:
+        code: Python 代码，必填。最后一行若为表达式则自动求值。
+
+    Returns:
+        {"stdout": str, "result": any, "error": str | None}
+    """
+    import sys
+    import io
+    import json as _json
+    import math
+    import statistics
+    import collections
+    import itertools
+    from datetime import datetime, timedelta
+
+    safe_locals = {
+        "json": _json, "math": math, "statistics": statistics,
+        "collections": collections, "itertools": itertools,
+        "datetime": datetime, "timedelta": timedelta,
+        "data": None,
+    }
+
+    # 捕获 print 输出
+    buf = io.StringIO()
+
+    try:
+        import ast
+        tree = ast.parse(code.strip())
+        if not tree.body:
+            return {"stdout": "", "result": None, "error": "空代码"}
+
+        *body_stmts, last_stmt = tree.body
+
+        # 先执行前面的语句
+        if body_stmts:
+            prefix_code = "\n".join(ast.unparse(stmt) for stmt in body_stmts)
+            exec(compile(prefix_code, "<sandbox>", "exec"), {"__builtins__": __builtins__}, safe_locals)
+
+        # 如果是 expression，eval 求值；否则 exec
+        if isinstance(last_stmt, ast.Expr):
+            result = eval(
+                compile(ast.Expression(body=last_stmt.value), "<sandbox>", "eval"),
+                {"__builtins__": __builtins__},
+                safe_locals,
+            )
+        else:
+            stmt_code = ast.unparse(last_stmt)
+            result = exec(compile(stmt_code, "<sandbox>", "exec"), {"__builtins__": __builtins__}, safe_locals)
+
+        return {
+            "stdout": buf.getvalue(),
+            "result": _json.dumps(result, ensure_ascii=False) if result is not None else None,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "stdout": buf.getvalue(),
+            "result": None,
+            "error": f"{type(e).__name__}: {str(e)}",
+        }

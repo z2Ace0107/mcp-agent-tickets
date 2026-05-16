@@ -19,10 +19,17 @@ from backend.agent import run_agent
 
 async def main():
     test_queries = [
-        "最近一周有哪些退款工单？",
+        "最近一周有哪些设备故障工单？",
         "帮我分析一下这个月工单的趋势",
+        "查看工单 WO-20260428-001 的详细信息",
+        "曲轴淬火后变形率超标怎么办？有没有类似案例？",
+        "帮我分析当前工单的优先级和紧急程度",
         "你好",
     ]
+
+    # 初始化应用（DB + RAG）
+    from backend import init_app
+    init_app()
 
     # 检查 API Key
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
@@ -31,7 +38,6 @@ async def main():
     if not deepseek_key and not settings.DEEPSEEK_API_KEY:
         print("[SKIP] 未设置 DEEPSEEK_API_KEY，跳过 Agent 集成测试")
         print("请在 side panel 或 .env 文件中配置 DEEPSEEK_API_KEY\n")
-        # 改为测试数据库和工具层
         _test_database_queries()
         return
 
@@ -124,8 +130,55 @@ def _test_database_queries():
     result = query_tickets(date_range="invalid-range")
     assert result[0].get("error") or True, "FAIL: 无效日期应正确处理"
 
+    # v3.3 新工具测试
+    from backend.tools import get_schema, execute_sql, execute_python
+
+    print("\nv3.3 新工具测试")
+    print("=" * 50)
+
+    # 9. get_schema — 所有表概览
+    print("\n9. get_schema() — 所有表概览")
+    result = get_schema()
+    assert "tables" in result, f"FAIL: {result}"
+    table_names = [t["table_name"] for t in result["tables"]]
+    print(f"   表列表: {table_names}")
+    assert "tickets" in table_names, "FAIL: 缺少 tickets 表"
+    assert "agent_actions" in table_names, "FAIL: 缺少 agent_actions 表"
+
+    # 10. get_schema — 单表详情
+    print("\n10. get_schema(table_name='tickets') — 单表详情")
+    result = get_schema("tickets")
+    assert "error" not in result, f"FAIL: {result}"
+    col_names = [c["column_name"] for c in result["columns"]]
+    print(f"   列: {col_names}")
+    assert "ticket_id" in col_names, "FAIL: 缺少 ticket_id 列"
+
+    # 11. execute_sql — 只读查询
+    print("\n11. execute_sql('SELECT COUNT(*) as cnt FROM tickets')")
+    result = execute_sql("SELECT COUNT(*) as cnt FROM tickets")
+    assert "error" not in result, f"FAIL: {result}"
+    print(f"   {result}")
+
+    # 12. execute_sql — 拒绝非 SELECT
+    print("\n12. execute_sql('DROP TABLE tickets') — 应拒绝")
+    result = execute_sql("DROP TABLE tickets")
+    assert "error" in result, f"FAIL: 应拒绝危险操作"
+    print(f"   正确拒绝: {result['error'][:50]}")
+
+    # 13. execute_python — 数据分析
+    print("\n13. execute_python('sum(range(1, 101))')")
+    result = execute_python("sum(range(1, 101))")
+    assert result.get("error") is None, f"FAIL: {result.get('error')}"
+    print(f"   1+2+...+100 = {result.get('result')}")
+
+    # 14. execute_python — 错误处理
+    print("\n14. execute_python('1/0') — 应捕获除零错误")
+    result = execute_python("1/0")
+    assert result.get("error") is not None, f"FAIL: 应报告错误"
+    print(f"   正确捕获: {result['error'][:50]}")
+
     print("\n" + "=" * 50)
-    print("所有数据库和工具函数测试通过!")
+    print("所有数据库和工具函数测试通过! (含 v3.3 新工具)")
 
 
 if __name__ == "__main__":
