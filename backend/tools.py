@@ -146,7 +146,7 @@ def recommend_tickets() -> dict[str, Any]:
 
 
 def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
-    """使用 DuckDuckGo 搜索互联网获取实时信息。
+    """使用百度AI搜索获取互联网实时信息。
 
     Args:
         query: 搜索关键词，必填。
@@ -155,15 +155,32 @@ def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
     Returns:
         {"query": str, "results": [{"title": str, "url": str, "snippet": str}, ...]}
     """
-    from ddgs import DDGS
+    import httpx
+    from backend.config import get_settings
+
+    settings = get_settings()
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+        resp = httpx.post(
+            f"{settings.BAIDU_SEARCH_BASE_URL}/web_search",
+            headers={
+                "Authorization": f"Bearer {settings.BAIDU_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messages": [{"content": query, "role": "user"}],
+                "search_source": "baidu_search_v2",
+                "resource_type_filter": [{"type": "web", "top_k": max_results}],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        references = data.get("references", [])
         return {
             "query": query,
             "results": [
-                {"title": r["title"], "url": r["href"], "snippet": r["body"]}
-                for r in results
+                {"title": r["title"], "url": r.get("url", ""), "snippet": r.get("content", "")[:500]}
+                for r in references[:max_results]
             ],
         }
     except Exception as e:
@@ -276,16 +293,17 @@ def execute_sql(sql: str) -> dict[str, Any]:
 
 
 def execute_python(code: str) -> dict[str, Any]:
-    """在受限沙箱中执行 Python 代码片段（用于数据分析）。
+    """在受限沙箱中执行 Python 代码片段（用于数据分析和可视化）。
 
-    可用预导入模块: json, datetime, math, statistics, collections, itertools
+    可用预导入模块: json, datetime, math, statistics, collections, itertools, matplotlib.pyplot(plt), numpy(np)
     内置 print() 输出将被捕获到 stdout。
+    使用 plt.savefig() 保存的图表会自动转为 base64 返回，供前端展示。
 
     Args:
         code: Python 代码，必填。最后一行若为表达式则自动求值。
 
     Returns:
-        {"stdout": str, "result": any, "error": str | None}
+        {"stdout": str, "result": any, "error": str | None, "chart_images": [str]}
     """
     import sys
     import io
@@ -294,6 +312,7 @@ def execute_python(code: str) -> dict[str, Any]:
     import statistics
     import collections
     import itertools
+    import base64
     from datetime import datetime, timedelta
 
     safe_locals = {
@@ -302,15 +321,35 @@ def execute_python(code: str) -> dict[str, Any]:
         "datetime": datetime, "timedelta": timedelta,
         "data": None,
     }
+    # 注入 matplotlib + numpy（如果已安装）
+    plt = None
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as _plt
+        import numpy as np
+        _plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+        _plt.rcParams['axes.unicode_minus'] = False
+        safe_locals["plt"] = _plt
+        safe_locals["np"] = np
+        plt = _plt
+    except ImportError:
+        pass
 
     # 捕获 print 输出
     buf = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = buf
+
+    # 清空当前已有 figures，避免上次执行残留
+    if plt is not None:
+        plt.close('all')
 
     try:
         import ast
         tree = ast.parse(code.strip())
         if not tree.body:
-            return {"stdout": "", "result": None, "error": "空代码"}
+            return {"stdout": "", "result": None, "error": "空代码", "chart_images": []}
 
         *body_stmts, last_stmt = tree.body
 
@@ -330,14 +369,82 @@ def execute_python(code: str) -> dict[str, Any]:
             stmt_code = ast.unparse(last_stmt)
             result = exec(compile(stmt_code, "<sandbox>", "exec"), {"__builtins__": __builtins__}, safe_locals)
 
+        # 捕获剩余未关闭的图表
+        chart_images = []
+        if plt is not None:
+            # 找到可用的中文字体
+            import matplotlib.font_manager as fm
+            cn_font_path = None
+            for name in ['SimHei', 'STXihei', 'PingFang SC', 'Microsoft YaHei']:
+                try:
+                    fp = fm.findfont(name, fallback_to_default=False)
+                    if fp and name.lower() in fp.lower():
+                        cn_font_path = fp
+                        break
+                except Exception:
+                    continue
+            # 创建中文字体属性
+            cn_font_prop = None
+            if cn_font_path:
+                try:
+                    cn_font_prop = fm.FontProperties(fname=cn_font_path)
+                except Exception:
+                    pass
+
+            for fig_num in plt.get_fignums():
+                try:
+                    fig = plt.figure(fig_num)
+                    # 遍历所有文本元素并强制设置中文字体
+                    if cn_font_prop:
+                        for ax in fig.get_axes():
+                            if ax.title:
+                                ax.title.set_fontproperties(cn_font_prop)
+                            if ax.xaxis.label:
+                                ax.xaxis.label.set_fontproperties(cn_font_prop)
+                            if ax.yaxis.label:
+                                ax.yaxis.label.set_fontproperties(cn_font_prop)
+                            for label in ax.get_xticklabels():
+                                label.set_fontproperties(cn_font_prop)
+                            for label in ax.get_yticklabels():
+                                label.set_fontproperties(cn_font_prop)
+                            legend = ax.get_legend()
+                            if legend:
+                                for text in legend.get_texts():
+                                    text.set_fontproperties(cn_font_prop)
+                        # 也处理 suptitle 和 figure 级别的 text
+                        if fig._suptitle:
+                            fig._suptitle.set_fontproperties(cn_font_prop)
+                        for txt in fig.texts:
+                            txt.set_fontproperties(cn_font_prop)
+
+                    img_buf = io.BytesIO()
+                    fig.savefig(img_buf, format='png', dpi=100, bbox_inches='tight')
+                    img_buf.seek(0)
+                    chart_images.append(base64.b64encode(img_buf.read()).decode('utf-8'))
+                    plt.close(fig)
+                except Exception:
+                    pass
+
+        # 序列化 result（处理 matplotlib object 等不可 JSON 序列化的类型）
+        result_json = None
+        if result is not None:
+            try:
+                result_json = _json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError):
+                result_json = str(result)
+
         return {
             "stdout": buf.getvalue(),
-            "result": _json.dumps(result, ensure_ascii=False) if result is not None else None,
+            "result": result_json,
             "error": None,
+            "chart_images": chart_images,
         }
     except Exception as e:
         return {
             "stdout": buf.getvalue(),
             "result": None,
             "error": f"{type(e).__name__}: {str(e)}",
+            "chart_images": [],
         }
+    finally:
+        sys.stdout = old_stdout

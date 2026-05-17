@@ -21,6 +21,10 @@ class Settings:
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
+    # 百度 AI 搜索 API（联网搜索）
+    BAIDU_API_KEY: str = os.getenv("BAIDU_API_KEY", "")
+    BAIDU_SEARCH_BASE_URL: str = os.getenv("BAIDU_SEARCH_BASE_URL", "https://qianfan.baidubce.com/v2/ai_search")
+
     # Embedding API（阿里云百炼，OpenAI 兼容）
     EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", os.getenv("DEEPSEEK_API_KEY", ""))
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")

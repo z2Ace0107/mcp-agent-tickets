@@ -279,6 +279,54 @@ hr { border-color: rgba(255,255,255,0.06) !important; margin: 0.5rem 0 !importan
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
 </style>
+
+<script>
+// 推理面板增强：展开滚动修正 + 底部收起按钮
+(function() {
+    function setupExpander(details) {
+        if (details.dataset.enhanced) return;
+        details.dataset.enhanced = '1';
+
+        var summary = details.querySelector('summary');
+        if (!summary) return;
+
+        // 1. 展开时滚到面板顶部
+        summary.addEventListener('click', function() {
+            setTimeout(function() {
+                if (details.hasAttribute('open')) {
+                    summary.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }, 80);
+        });
+
+        // 2. 底部注入收起按钮
+        var btn = document.createElement('button');
+        btn.textContent = '收起 ▲';
+        btn.style.cssText = 'display:block;margin:8px auto 0;font-size:0.7rem;' +
+            'color:#8B8B8B;background:rgba(255,255,255,0.03);' +
+            'border:1px solid rgba(255,255,255,0.08);border-radius:4px;' +
+            'cursor:pointer;padding:2px 14px;';
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            details.open = false;
+        });
+        details.appendChild(btn);
+    }
+
+    function scanExpanders() {
+        var detailsList = window.parent.document.querySelectorAll(
+            '[data-testid="stExpander"] details'
+        );
+        detailsList.forEach(setupExpander);
+    }
+
+    scanExpanders();
+    new MutationObserver(scanExpanders).observe(
+        window.parent.document.body, { childList: true, subtree: true }
+    );
+})();
+</script>
 """
 
 # ============================================================
@@ -356,7 +404,7 @@ def fetch_ticket_stats():
 
 
 def convert_markdown_table(text: str) -> str:
-    """将 Markdown 表格转换为 Key-Value 列表格式，提升可读性。"""
+    """将 Markdown 表格转换为卡片式列表格式，提升可读性。"""
     import re
 
     def _is_separator(line: str) -> bool:
@@ -390,17 +438,24 @@ def convert_markdown_table(text: str) -> str:
 
 
 def _table_to_kv(lines: list[str]) -> str:
-    """将表格行列表转换为 ● Key: Value 格式。"""
+    """将表格行转换为卡片式多行格式。
+
+    2 列 -> 单行: ● Key: Value
+    3+ 列 -> 多行卡片: 首列加粗标题，其余字段缩进换行
+    """
     cols = [c.strip() for c in lines[0].strip("|").split("|")]
     out = []
     for line in lines[1:]:
         vals = [c.strip() for c in line.strip("|").split("|")]
-        if len(vals) == len(cols):
-            if len(cols) == 2:
-                out.append(f"● {vals[0]}: {vals[1]}")
-            else:
-                items = "  |  ".join(f"{cols[i]}: {vals[i]}" for i in range(len(cols)))
-                out.append(f"● {items}")
+        if len(vals) != len(cols):
+            continue
+        if len(cols) == 2:
+            out.append(f"● **{vals[0]}**: {vals[1]}")
+        else:
+            # 多列 → 卡片式：首列加粗作标题，其余字段缩进换行
+            title = vals[0]
+            fields = "\n".join(f"  {cols[i]}: {vals[i]}" for i in range(1, len(cols)))
+            out.append(f"● **{title}**\n{fields}")
     return "\n".join(out)
 
 
@@ -502,8 +557,39 @@ def render_reAct_steps(msg: dict):
             elif obs:
                 st.code(obs, language="json")
 
+            # 图表渲染（execute_python 生成的 chart_images）
+            chart_images = step.get("chart_images", [])
+            if chart_images:
+                import base64 as _b64
+                n = len(chart_images)
+                if n == 1:
+                    l, c, r = st.columns([1.5, 7, 1.5])
+                    with c:
+                        st.image(_b64.b64decode(chart_images[0]), use_container_width=True)
+                else:
+                    for ci, img_b64 in enumerate(chart_images):
+                        st.image(_b64.b64decode(img_b64), use_container_width=True)
+
             if si < len(steps):
                 st.divider()
+
+
+
+def render_charts_from_steps(steps: list):
+    """从步骤列表中提取图表 base64 数据并渲染。"""
+    import base64 as _b64
+    for step in steps:
+        charts = step.get("chart_images", [])
+        if charts:
+            n = len(charts)
+            if n == 1:
+                # 单图居中，占 70% 宽度
+                l, c, r = st.columns([1.5, 7, 1.5])
+                with c:
+                    st.image(_b64.b64decode(charts[0]), use_container_width=True)
+            else:
+                for ci, img_b64 in enumerate(charts):
+                    st.image(_b64.b64decode(img_b64), use_container_width=True)
 
 
 def save_current_conversation():
@@ -901,6 +987,8 @@ for idx, msg in enumerate(st.session_state.chat_history):
 
     with st.chat_message(role):
         st.markdown(convert_markdown_table(content))
+        if role == "assistant":
+            render_charts_from_steps(msg.get("steps", []))
         if st.session_state.show_timestamps and msg_time:
             # 路由徽标
             route = msg.get("route", "")
@@ -1044,6 +1132,7 @@ if prompt:
 
     with st.chat_message("assistant"):
         st.markdown(convert_markdown_table(response_text))
+        render_charts_from_steps(steps)
         if route:
             icon, label, color = ROUTE_LABELS.get(route, ("", route, "#8B8B8B"))
             st.markdown(

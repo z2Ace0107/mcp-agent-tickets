@@ -48,4 +48,5 @@ Thumbs.db
 chroma_data/
 
 # Logs
-logs/
+logs/*.png
+*.jpg

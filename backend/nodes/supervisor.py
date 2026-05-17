@@ -32,10 +32,25 @@ def supervisor_node(state: dict) -> dict:
         query → query_agent
         analyze → analyze_agent
         knowledge → knowledge_agent
-        chat → reporter
+        chat → reporter (快捷问候直接透传)
     """
     user_input = state.get("user_input", "")
     chat_history = state.get("chat_history")
+
+    # 快捷拦截：纯问候/闲聊直接返回，跳过整个 agent 管线
+    CHAT_KEYWORDS = [
+        "你好", "hello", "hi", "谢谢", "再见", "bye", "你是谁", "你能做什么",
+        "有什么功能", "帮帮我", "怎么用", "早上好", "下午好", "晚上好",
+    ]
+    stripped = user_input.strip().lower()
+    if any(stripped.startswith(kw) or stripped == kw for kw in CHAT_KEYWORDS):
+        return {
+            "intent": "chat",
+            "rewritten_query": "[direct_chat]",
+            "route": "reporter",
+            "active_agent": "reporter",
+            "direct_chat": True,
+        }
 
     history_text = "无"
     if chat_history:

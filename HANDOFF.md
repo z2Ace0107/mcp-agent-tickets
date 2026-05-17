@@ -12,13 +12,32 @@ streamlit run frontend/app.py
 # → http://localhost:8501
 ```
 
-## 当前状态：v3.3 完成 ✅
+## 当前状态：v3.3 + 今日修复 (2026-05-17) ✅
 
 ```
-v2.0 ✅ → v3.1 ✅ → v3.2 ✅ → v3.3 ✅ → v3.4 → v4.0
+v2.0 ✅ → v3.1 ✅ → v3.2 ✅ → v3.3 ✅ → 今日批量修复 ✅
 ```
 
-（第一轮 v3.3 已回退 commit 0cbbb0e，当前为第二轮重做 commit 80d82a9）
+**今日修复（7项）：**
+
+| # | 问题 | 涉及文件 |
+|---|------|----------|
+| 1 | DDGS 联网搜索超时4分钟 | tools.py, config.py, graph.py, .env, requirements.txt |
+| 2 | matplotlib 未安装，图表功能不可用 | tools.py, requirements.txt |
+| 3 | Python 沙箱 print() 从未被捕获 (sys.stdout bug) | tools.py |
+| 4 | Query/Analyze Agent 绕过高层工具直接用 SQL/Python | prompts.py (两处) |
+| 5 | "你好"走完整 LLM 管线 | supervisor.py |
+| 6 | 推理面板展开跳到底部 + 无法一键折叠 | app.py (MutationObserver) |
+| 7 | 图表生成后前端不显示 (Reporter 内联路径丢弃 chart_images) | reporter.py, app.py |
+
+## 环境变量
+
+```
+DEEPSEEK_API_KEY=sk-xxx
+BAIDU_API_KEY=bce-v3/ALTAK-xxx      # 百度AI搜索，100次/天免费
+BAIDU_SEARCH_BASE_URL=https://qianfan.baidubce.com/v2/ai_search
+EMBEDDING_API_KEY=sk-xxx             # 阿里百炼
+```
 
 ## v3.3 架构
 
@@ -87,42 +106,37 @@ mcp-agent-tickets/
 └── .env / requirements.txt
 ```
 
-## 验证方式
+## 已知架构弱点
+
+**Reporter 内联执行 vs tool_executor_node 双路径**：Reporter 的 `execute_python` 在 `reporter_node` 内联执行，不经过 `tool_executor_node`。这意味着 tool_executor_node 的步骤记录、超时控制、熔断器等机制对 Reporter 路径无效。改代码时如果只改了一个路径，bug 会在另一个路径复现。
+
+**性能**：当前"画工单类型分布图"耗时 ~42s（5次 LLM 调用 + Python 图表生成）。瓶颈在 analyze agent 的多轮 tool call 往返。
+
+## 手动测试
 
 ```powershell
-rm data/tickets.db
-python test_agent.py                 # 6 LLM 用例 + 14 DB 用例
-streamlit run frontend/app.py        # UI 黄金路径 + 重置12表
+streamlit run frontend/app.py
 ```
 
-### 手动测试关键用例
+| 输入 | 检查点 |
+|------|--------|
+| 查看所有工单 | 推理用 `query_tickets`，非 `execute_sql` |
+| 统计工单类型数量 | 推理用 `analyze_tickets`，非 `execute_python` |
+| 画工单类型分布图 | 图表直接显示在回复中，中文不乱码 |
+| 搜索工厂设备维修方案 | `联网搜索` 几秒内返回 |
+| 你好 | 简短回复，推理面板显示"💬 直接回复" |
+| 展开"推理过程" | 不跳底，底部有"收起 ▲"可折叠 |
 
-| 输入 | 预期路由 |
-|------|----------|
-| 最近一周有哪些设备故障工单？ | Query Agent |
-| 帮我分析这个月工单趋势 | Analyze Agent |
-| 查看工单 WO-20260428-001 详情 | Query Agent |
-| 曲轴淬火变形率超标怎么办？ | Knowledge Agent |
-| 帮我分析工单优先级和紧急程度 | Analyze Agent |
-| 你好 | Reporter (chat) |
+## 待改进
 
-展开"推理过程"面板 → 步骤 0 显示路由 → 后续步骤工具名匹配 Agent 职责
+### P0: 架构统一 — Reporter 工具执行走 tool_executor_node
+Reporter 的 execute_python 应通过 tool_executor_node 执行，消除双路径。改动 graph.py 路由逻辑 + reporter_node。
 
----
+### P1: 流式输出
+当前全量生成后渲染，用户等 30s+。用 LangGraph `astream` + `st.write_stream`。
 
-## v3.3 待改进（下个 /clear 后优先）
+### P1: 性能优化
+analyze agent 多轮往返是主要瓶颈。考虑：合并 analyze_tickets + recommend_tickets 为单次调用，限 MAX_AGENT_ITERATIONS=3。
 
-### 1. Reporter execute_python 触发优化
-
-当前 Reporter 绑了 execute_python，但触发条件不明确。
-**方案**：改 `REPORTER_PROMPT`，加规则——"当用户要求图表/可视化/柱状图/趋势图，或统计数据超过 5 行时，用 execute_python 生成图表代码"。不改代码。
-
-### 2. 流式输出
-
-当前 `st.chat_message` 等全部生成完再渲染，用户等待 30s+。
-**方案**：graph.py 加 `run_graph_stream()`，用 LangGraph `astream` + Streamlit `st.write_stream`。
-
-### 3. v3.4：可观测性 + 评测（见 AGENTS.md）
-
-- LangSmith Tracing（环境变量 `LANGCHAIN_TRACING_V2=true`）
-- 50 条测试集 + LLM-as-a-judge 自动评分
+### P2: 可观测性
+LangSmith Tracing + 评测集

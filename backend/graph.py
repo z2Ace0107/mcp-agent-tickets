@@ -111,7 +111,7 @@ def execute_sql_tool(sql: str) -> str:
 
 @tool
 def execute_python_tool(code: str) -> str:
-    """在受限沙箱中执行Python代码做数据分析。可用模块：json/datetime/math/statistics/collections/itertools。code: Python代码，必填。print()输出被捕获到stdout。"""
+    """在受限沙箱中执行Python代码做数据分析或可视化。plt和np已预导入，中文字体(SimHei)已配好，禁止重复设置plt.rcParams/font。可用模块：json/datetime/math/statistics/collections/itertools。code: Python代码，必填。print()输出被捕获到stdout。"""
     result = execute_python(code=code)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -182,6 +182,10 @@ class AgentState(TypedDict):
 # ============================================================
 
 TOOL_TIMEOUT = 10
+TOOL_TIMEOUT_MAP = {
+    "web_search_tool": 30,  # 联网搜索允许更长超时
+    "execute_python_tool": 20,  # Python 沙箱可能计算密集
+}
 CIRCUIT_BREAKER_THRESHOLD = 3
 RETRY_BACKOFFS = [0.2, 0.4, 0.8]
 MAX_CORRECTION_ATTEMPTS = 2
@@ -218,19 +222,20 @@ def _execute_single_tool(tool_name: str, tool_args: dict, circuit_state: dict[st
     if tool_func is None:
         return json.dumps({"error": f"未知工具: {tool_name}"}, ensure_ascii=False), meta
 
+    timeout = TOOL_TIMEOUT_MAP.get(tool_name, TOOL_TIMEOUT)
     last_error = None
     for attempt in range(len(RETRY_BACKOFFS) + 1):
         try:
             start = time.time()
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(tool_func.invoke, tool_args)
-                result = future.result(timeout=TOOL_TIMEOUT)
+                result = future.result(timeout=timeout)
             meta["elapsed"] = round(time.time() - start, 3)
             meta["retries"] = attempt
             circuit_state[tool_name] = 0
             return str(result), meta
         except ThreadTimeoutError:
-            last_error = f"超时（{TOOL_TIMEOUT}s）"
+            last_error = f"超时（{timeout}s）"
         except Exception as e:
             last_error = str(e)
         if attempt < len(RETRY_BACKOFFS):
@@ -267,14 +272,24 @@ def tool_executor_node(state: AgentState) -> dict:
 
         tool_messages.append(ToolMessage(content=observation, tool_call_id=tool_call_id))
 
-        steps.append({
+        step_data = {
             "action": tool_name,
             "action_input": json.dumps(tool_args, ensure_ascii=False),
             "observation": observation[:2000],
             "elapsed": meta["elapsed"],
             "degraded": meta["degraded"],
             "retries": meta["retries"],
-        })
+        }
+        # 提取 execute_python 生成的图表 base64 数据，供前端渲染
+        if tool_name == "execute_python_tool":
+            try:
+                obs_data = json.loads(observation)
+                charts = obs_data.get("chart_images", [])
+                if charts:
+                    step_data["chart_images"] = charts
+            except (json.JSONDecodeError, KeyError):
+                pass
+        steps.append(step_data)
 
         # 自校正: execute_sql 出错且还有重试配额
         if (tool_name == "execute_sql_tool"

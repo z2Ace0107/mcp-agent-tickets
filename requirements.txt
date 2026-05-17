@@ -7,6 +7,8 @@ streamlit
 mcp
 python-dotenv
 chromadb
-ddgs
+httpx
+matplotlib
+numpy
 schedule
 pydantic-settings
