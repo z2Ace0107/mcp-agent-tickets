@@ -48,7 +48,8 @@ def init_db(db_path: str | None = None) -> None:
                 assignee TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                description TEXT NOT NULL
+                description TEXT NOT NULL,
+                solution TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS ticket_replies (
