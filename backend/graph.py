@@ -336,6 +336,19 @@ def route_agent(state: AgentState) -> str:
     return "reporter"
 
 
+def route_reporter(state: AgentState) -> str:
+    """After reporter: if has tool_calls → tool_executor, else END."""
+    if state.get("agent_iterations", 0) >= MAX_AGENT_ITERATIONS:
+        return "END"
+    messages = state.get("messages", [])
+    if not messages:
+        return "END"
+    last_msg = messages[-1]
+    if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+        return "tool_executor"
+    return "END"
+
+
 def route_after_tools(state: AgentState) -> str:
     """After tool execution: back to agent or to reporter."""
     if state.get("agent_iterations", 0) >= MAX_AGENT_ITERATIONS:
@@ -380,7 +393,10 @@ def build_graph() -> StateGraph:
          "knowledge_agent": "knowledge_agent", "reporter": "reporter"},
     )
 
-    workflow.add_edge("reporter", END)
+    workflow.add_conditional_edges(
+        "reporter", route_reporter,
+        {"tool_executor": "tool_executor", "END": END},
+    )
 
     return workflow.compile()
 
@@ -440,4 +456,81 @@ async def run_graph(
         "intent": intent,
         "rewritten_query": rewritten,
         "context_info": None,
+    }
+
+
+async def run_graph_stream(
+    user_input: str,
+    chat_history: list[dict[str, str]] | None = None,
+):
+    """v4.0: 流式运行 LangGraph 图，yield 节点进度 + 最终结果。"""
+    logger.info(f"[graph:stream] 开始: '{user_input[:60]}...'")
+    graph = build_graph()
+
+    initial_state = {
+        "messages": [],
+        "user_input": user_input,
+        "chat_history": chat_history,
+        "intent": "",
+        "rewritten_query": user_input,
+        "route": "",
+        "active_agent": "",
+        "agent_iterations": 0,
+        "correction_attempts": 0,
+        "intermediate_steps": [],
+        "circuit_state": {},
+    }
+
+    NODE_LABEL = {
+        "supervisor": "分析意图...",
+        "query_agent": "Query Agent 查询中...",
+        "analyze_agent": "Analyze Agent 分析中...",
+        "knowledge_agent": "Knowledge Agent 检索中...",
+        "tool_executor": "执行工具...",
+        "reporter": "生成报告...",
+    }
+
+    start_time = time.time()
+    final_state = initial_state
+
+    async for event in graph.astream(initial_state, stream_mode="updates"):
+        for node_name, update in event.items():
+            for key, value in update.items():
+                if key == "messages":
+                    existing = final_state.get("messages", [])
+                    final_state["messages"] = existing + list(value) if value else existing
+                else:
+                    final_state[key] = value
+
+            label = NODE_LABEL.get(node_name, node_name)
+            steps = final_state.get("intermediate_steps", [])
+            route = final_state.get("route", "")
+            intent = final_state.get("intent", "")
+
+            yield {
+                "type": "progress",
+                "node": node_name,
+                "label": label,
+                "steps": steps,
+                "route": route,
+                "intent": intent,
+            }
+
+    output = extract_final_output(final_state.get("messages", []))
+    steps = final_state.get("intermediate_steps", [])
+    route = final_state.get("route", "")
+    intent = final_state.get("intent", "")
+    rewritten = final_state.get("rewritten_query", user_input)
+    elapsed = time.time() - start_time
+
+    logger.info(f"[graph:stream] 完成: route={route}, steps={len(steps)}, elapsed={elapsed:.1f}s")
+
+    yield {
+        "type": "done",
+        "output": output,
+        "intermediate_steps": steps,
+        "route": route,
+        "intent": intent,
+        "rewritten_query": rewritten,
+        "elapsed": round(elapsed, 1),
     }

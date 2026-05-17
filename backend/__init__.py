@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MCP智能工单Agent系统 - 后端模块"""
+"""LineMind — 制造业多智能体协管平台"""
 
 
 def init_app() -> None:

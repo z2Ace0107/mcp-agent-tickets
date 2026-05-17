@@ -1,24 +1,28 @@
-# HANDOFF — Super Agent 项目交接
+# HANDOFF — LineMind 项目交接
 
 > `/clear` 后读此文件即可恢复全部上下文。
 
 ## 启动
 
 ```powershell
-cd "E:\develop\claude\项目开发2\MCP智能工单Agent系统\mcp-agent-tickets"
+cd "E:\develop\claude\项目开发2\LineMind\linemind"
 & e:\develop\claude\.venv\Scripts\Activate.ps1
 rm data/tickets.db -ErrorAction SilentlyContinue   # 首次或重置
 streamlit run frontend/app.py
 # → http://localhost:8501
 ```
 
-## 当前状态：v3.3 + 今日修复 (2026-05-17) ✅
+## 当前状态：v3.3 + 修复 → v3.4 开发中 (2026-05-17)
 
 ```
-v2.0 ✅ → v3.1 ✅ → v3.2 ✅ → v3.3 ✅ → 今日批量修复 ✅
+v3.3 ✅ → 今日修复(8项) ✅ → v3.4 (CURRENT) → v4.0
+                              ├─ 评测50题       ├─ 流式输出
+                              ├─ LangSmith      ├─ README大改
+                              └─ 量化数据       ├─ GIF演示
+                                               └─ 收尾发布
 ```
 
-**今日修复（7项）：**
+**今日修复（8项）：**
 
 | # | 问题 | 涉及文件 |
 |---|------|----------|
@@ -29,6 +33,20 @@ v2.0 ✅ → v3.1 ✅ → v3.2 ✅ → v3.3 ✅ → 今日批量修复 ✅
 | 5 | "你好"走完整 LLM 管线 | supervisor.py |
 | 6 | 推理面板展开跳到底部 + 无法一键折叠 | app.py (MutationObserver) |
 | 7 | 图表生成后前端不显示 (Reporter 内联路径丢弃 chart_images) | reporter.py, app.py |
+| 8 | plt.savefig 污染项目根目录（10 张 PNG） | tools.py + .gitignore |
+
+## 文档结构（整理后）
+
+```
+项目根/
+├── AGENTS.md          ← 主线开发文档（版本规划+面试要点）
+├── linemind/
+│   ├── HANDOFF.md     ← 本文件（启动+架构+状态）
+│   ├── README.md      ← 对外展示（v3.0 过时，v4.0 重写）
+│   ├── CHANGELOG.md   ← 版本记录
+│   ├── docs/          ← 已清空（旧 PRD/Tech Design 已删）
+│   └── eval/          ← 评测脚本（v3.4 新建）
+```
 
 ## 环境变量
 
@@ -80,7 +98,7 @@ query_tickets / analyze_tickets / update_ticket_status / assign_ticket / add_tic
 ## 项目结构（v3.3）
 
 ```
-mcp-agent-tickets/
+linemind/
 ├── frontend/app.py              — Streamlit UI（重置12表）
 ├── backend/
 │   ├── __init__.py              — init_app() 入口
@@ -127,16 +145,23 @@ streamlit run frontend/app.py
 | 你好 | 简短回复，推理面板显示"💬 直接回复" |
 | 展开"推理过程" | 不跳底，底部有"收起 ▲"可折叠 |
 
-## 待改进
+## v3.4 计划 — 评测体系
 
-### P0: 架构统一 — Reporter 工具执行走 tool_executor_node
-Reporter 的 execute_python 应通过 tool_executor_node 执行，消除双路径。改动 graph.py 路由逻辑 + reporter_node。
+| 类别 | 题数 | 说明 |
+|------|------|------|
+| 工单查询 (Query) | 12 | 按类型/状态/日期/优先级筛选 |
+| 统计分析 (Analyze) | 12 | 分布/趋势/汇总/对比 |
+| 知识检索 (Knowledge) | 8 | 内部 RAG + 联网搜索 |
+| 工单操作 (Action) | 8 | 更新状态/分配/回复 |
+| 综合推理 (Multi-hop) | 6 | 多 Agent 协作/多步推理 |
+| 闲聊拦截 (Chat) | 4 | 问候/无关话题 |
+| **总计** | **50** | |
 
-### P1: 流式输出
-当前全量生成后渲染，用户等 30s+。用 LangGraph `astream` + `st.write_stream`。
+评测维度：工具选择准确率 / Agent 路由准确率 / SQL 执行成功率 / Self-Correction 成功率 / 回答相关性(1-5)
 
-### P1: 性能优化
-analyze agent 多轮往返是主要瓶颈。考虑：合并 analyze_tickets + recommend_tickets 为单次调用，限 MAX_AGENT_ITERATIONS=3。
+## v4.0 计划 — 展示包装
 
-### P2: 可观测性
-LangSmith Tracing + 评测集
+- 流式输出：graph.astream + st.write_stream
+- README v4.0：架构图 + GIF + 评测数据
+- P0 架构统一：Reporter 走 tool_executor_node
+- 收尾发布：git tag v4.0.0

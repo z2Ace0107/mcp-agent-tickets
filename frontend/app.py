@@ -334,7 +334,7 @@ hr { border-color: rgba(255,255,255,0.06) !important; margin: 0.5rem 0 !importan
 # ============================================================
 
 st.set_page_config(
-    page_title="MCP智能工单助手",
+    page_title="LineMind",
     page_icon="🎫",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -676,8 +676,8 @@ tl, tr = st.columns([6, 1])
 with tl:
     st.markdown(
         '<div class="app-title">'
-        '🎫 MCP 智能工单助手'
-        '<span class="badge">v3.0</span>'
+        'LineMind'
+        '<span class="badge">v4.0</span>'
         '</div>'
         '<div class="app-subtitle">企业工单管理与智能分析</div>',
         unsafe_allow_html=True,

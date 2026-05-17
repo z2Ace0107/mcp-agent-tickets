@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent 入口 — v3.3: LangGraph 5-Agent 图"""
+"""Agent 入口 — v4.0: LineMind LangGraph 5-Agent 图"""
 
 from typing import Any
 
@@ -15,7 +15,7 @@ async def run_agent(
     max_retries: int = 3,
     max_iterations: int = 5,
 ) -> dict[str, Any]:
-    """运行 LangGraph Super Agent。
+    """运行 LineMind LangGraph 图。
 
     Returns:
         {"output": str, "intermediate_steps": [...], "route": str, "intent": str, ...}
