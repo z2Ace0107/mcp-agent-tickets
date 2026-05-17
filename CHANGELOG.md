@@ -4,6 +4,27 @@
 
 ---
 
+## v3.3 (2026-05-16)
+
+### 新增
+- **5 表星型 Schema**: tickets 加 3 FK 列（equipment_id/line_id/material_id），新建 equipment/production_lines/materials/quality_metrics 四张领域表
+- **5-Agent LangGraph**: Supervisor(路由) → Query(6工具)/Analyze(3)/Knowledge(3) → Reporter(execute_python图表)
+- **3 个新工具**: get_schema(表结构查询) / execute_sql(只读SQL) / execute_python(沙箱数据分析)
+- **Self-Correction**: execute_sql 出错 → 自动注入修正提示 → get_schema→ 重试，最多 2 轮
+- **工具子集分组**: 每个 Agent 仅绑定职责相关的工具（不再全量 12 个）
+- **节点独立文件**: `backend/nodes/` 目录，supervisor/query/analyze/knowledge/reporter 各一文件
+- **种子数据 30+**: 10 台设备/4 条产线/6 种物料/3 条质量指标，当天日期的动态工单
+
+### 增强
+- Agent 路由可视化：推理面板步骤 0 显示 Supervisor 路由目标
+- 前端重置覆盖全部 12 张表
+
+### 修复
+- agent.py 从 550+ 行瘦身至 25 行，移除 legacy 回退代码（git 可回退）
+- MCP query_tickets 描述修正为工厂领域类型
+
+---
+
 ## v3.2 (2026-05-13)
 
 ### 新增
