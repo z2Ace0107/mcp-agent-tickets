@@ -323,6 +323,7 @@ def execute_python(code: str) -> dict[str, Any]:
     }
     # 注入 matplotlib + numpy（如果已安装）
     plt = None
+    _sandbox_tmpdir = None
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -330,6 +331,20 @@ def execute_python(code: str) -> dict[str, Any]:
         import numpy as np
         _plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
         _plt.rcParams['axes.unicode_minus'] = False
+
+        # 将 savefig 重定向到临时目录，避免污染项目根目录
+        import tempfile as _tempfile
+        import os as _os
+        _sandbox_tmpdir = _tempfile.mkdtemp(prefix="sandbox_")
+        _original_savefig = _plt.savefig
+
+        def _sandbox_savefig(filename, *args, **kwargs):
+            if not _os.path.isabs(filename) and not _os.path.dirname(filename):
+                filename = _os.path.join(_sandbox_tmpdir, _os.path.basename(filename))
+            return _original_savefig(filename, *args, **kwargs)
+
+        _plt.savefig = _sandbox_savefig
+
         safe_locals["plt"] = _plt
         safe_locals["np"] = np
         plt = _plt
@@ -448,3 +463,9 @@ def execute_python(code: str) -> dict[str, Any]:
         }
     finally:
         sys.stdout = old_stdout
+        if _sandbox_tmpdir is not None:
+            import shutil as _shutil
+            try:
+                _shutil.rmtree(_sandbox_tmpdir, ignore_errors=True)
+            except Exception:
+                pass
