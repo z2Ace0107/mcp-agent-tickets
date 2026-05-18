@@ -1,6 +1,35 @@
-# Changelog — MCP 智能工单 Agent 系统
+# Changelog — LineMind
 
 所有显著变更均记录于此。版本号遵循 `主版本.次版本` 格式。
+
+---
+
+## v4.0 (2026-05-18)
+
+### 新增
+- **流式输出**: LangGraph `stream_mode=["updates", "messages"]` 双通道，Reporter 逐 token 实时输出到前端 `st.write_stream`
+- **README v4.0**: 核心数字 + 能力矩阵 + 架构图 + 版本演进对比
+
+### 增强
+- Reporter prompt 改为数据优先（数据 80%，建议 1-2 句）
+- 评测报告简化：终端只输出路由+工具+崩溃率核心指标
+
+### 移除
+- Self-Correction：50 题仅触发 1 次，SQL 成功率已 92.3%，性价比极低
+
+---
+
+## v3.5 (2026-05-18)
+
+### 新增
+- **流式输出**: `graph.py` 新增 `run_graph_stream()`，`stream_mode=["updates", "messages"]` 双通道
+- **RAG P0**: tickets 表 solution 列补完，`search_solutions` 从 ChromaDB 检索历史方案
+- **LLM-as-Judge 三项指标**: 回答相关性（真实 LLM 打分）、SQL 执行成功率、Self-Correction 成功率
+
+### 增强
+- 写操作守卫：读查询场景禁止调用 assign/update 工具
+- Supervisor 路由边界：计数类问题路由到 query 而非 analyze
+- 裁判 prompt 类型感知：不同类别用不同评分标准
 
 ---
 

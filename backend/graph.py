@@ -172,7 +172,6 @@ class AgentState(TypedDict):
     route: str
     active_agent: str
     agent_iterations: int
-    correction_attempts: int
     intermediate_steps: list[dict[str, Any]]
     circuit_state: dict[str, int]
 
@@ -188,7 +187,6 @@ TOOL_TIMEOUT_MAP = {
 }
 CIRCUIT_BREAKER_THRESHOLD = 3
 RETRY_BACKOFFS = [0.2, 0.4, 0.8]
-MAX_CORRECTION_ATTEMPTS = 2
 MAX_AGENT_ITERATIONS = 5
 
 
@@ -249,7 +247,7 @@ def _execute_single_tool(tool_name: str, tool_args: dict, circuit_state: dict[st
 
 
 def tool_executor_node(state: AgentState) -> dict:
-    """执行工具调用，检测 SQL 错误并触发自校正。"""
+    """执行工具调用，含超时/重试/熔断。"""
     messages = state.get("messages", [])
     if not messages:
         return {}
@@ -261,8 +259,6 @@ def tool_executor_node(state: AgentState) -> dict:
     circuit_state = state.get("circuit_state", {})
     tool_messages = []
     steps = state.get("intermediate_steps", [])
-    correction_attempts = state.get("correction_attempts", 0)
-    correction_msgs = []
 
     for tc in last_msg.tool_calls:
         tool_name = tc.get("name", "")
@@ -292,25 +288,10 @@ def tool_executor_node(state: AgentState) -> dict:
                 pass
         steps.append(step_data)
 
-        # 自校正: execute_sql 出错且还有重试配额
-        if (tool_name == "execute_sql_tool"
-                and '"error"' in observation
-                and correction_attempts < MAX_CORRECTION_ATTEMPTS):
-            correction_msgs.append(HumanMessage(content=(
-                f"SQL 执行出错: {observation[:500]}\n\n"
-                "请按以下步骤修复:\n"
-                "1. 使用 get_schema 工具确认相关表的表名和列名\n"
-                "2. 修正 SQL 语句\n"
-                "3. 使用 execute_sql 重新执行\n"
-                "注意: 工单表名是 tickets (复数), 类型字段是 type, 日期字段是 created_at"
-            )))
-            correction_attempts += 1
-
     return {
-        "messages": tool_messages + correction_msgs,
+        "messages": tool_messages,
         "intermediate_steps": steps,
         "circuit_state": circuit_state,
-        "correction_attempts": correction_attempts,
         "agent_iterations": state.get("agent_iterations", 0) + 1,
     }
 
@@ -433,7 +414,6 @@ async def run_graph(
         "route": "",
         "active_agent": "",
         "agent_iterations": 0,
-        "correction_attempts": 0,
         "intermediate_steps": [],
         "circuit_state": {},
     }
@@ -481,7 +461,6 @@ async def run_graph_stream(
         "route": "",
         "active_agent": "",
         "agent_iterations": 0,
-        "correction_attempts": 0,
         "intermediate_steps": [],
         "circuit_state": {},
     }

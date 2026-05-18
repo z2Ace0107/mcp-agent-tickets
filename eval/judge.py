@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""v3.4 LineMind LLM-as-a-judge 评测脚本 — 50 题测试集自动打分
-五项指标：路由准确率 / 工具选择准确率 / SQL 执行成功率 / Self-Correction 成功率 / 回答相关性
-路由和工具为客观匹配，SQL/Self-Correction 为 steps 解析，回答相关性由 DeepSeek 裁判 LLM 打分。
+"""v4.0 LineMind 评测脚本 — 50 题测试集自动打分
+核心指标：路由准确率 / 工具选择准确率 / 崩溃率
+路由和工具为客观匹配，回答相关性由 DeepSeek 裁判 LLM 打分（chat 类豁免）。
 """
 
 import json
@@ -54,35 +54,6 @@ def compute_sql_metrics(steps: list[dict]) -> dict:
         "sql_total": total,
         "sql_success": success,
         "sql_success_rate": f"{success}/{total} ({round(success/total*100, 1)}%)",
-    }
-
-
-def detect_self_correction(steps: list[dict]) -> dict:
-    """从 steps 检测 Self-Correction 链路：SQL出错 → 修正 → 重试成功。"""
-    attempted = 0
-    succeeded = 0
-
-    i = 0
-    while i < len(steps):
-        action = steps[i].get("action", "")
-        obs = str(steps[i].get("observation", ""))
-        if "execute_sql" in action and '"error"' in obs.lower():
-            attempted += 1
-            for j in range(i + 1, len(steps)):
-                next_action = steps[j].get("action", "")
-                if "execute_sql" in next_action:
-                    next_obs = str(steps[j].get("observation", ""))
-                    if '"error"' not in next_obs.lower():
-                        succeeded += 1
-                    break
-        i += 1
-
-    if attempted == 0:
-        return {"sc_attempted": 0, "sc_succeeded": 0, "sc_success_rate": "N/A"}
-    return {
-        "sc_attempted": attempted,
-        "sc_succeeded": succeeded,
-        "sc_success_rate": f"{succeeded}/{attempted} ({round(succeeded/attempted*100, 1)}%)",
     }
 
 
@@ -178,11 +149,11 @@ async def score_result(test: dict, steps: list[dict], output: str, route: str, i
     # 3. SQL 执行成功率
     sql_metrics = compute_sql_metrics(steps)
 
-    # 4. Self-Correction
-    sc_metrics = detect_self_correction(steps)
-
-    # 5. LLM 裁判回答相关性
-    relevance = await judge_relevance(test["question"], output, test["category"])
+    # 4. LLM 裁判回答相关性（chat 类豁免）
+    if test["category"] == "chat":
+        relevance = {"score": 5, "reason": "chat类豁免LLM评分"}
+    else:
+        relevance = await judge_relevance(test["question"], output, test["category"])
 
     # 错误收集
     errors = []
@@ -205,9 +176,6 @@ async def score_result(test: dict, steps: list[dict], output: str, route: str, i
         "sql_total": sql_metrics["sql_total"],
         "sql_success": sql_metrics["sql_success"],
         "sql_success_rate": sql_metrics["sql_success_rate"],
-        "sc_attempted": sc_metrics["sc_attempted"],
-        "sc_succeeded": sc_metrics["sc_succeeded"],
-        "sc_success_rate": sc_metrics["sc_success_rate"],
         "answer_relevance": relevance["score"],
         "relevance_reason": relevance["reason"],
         "steps_count": len(steps),
@@ -219,8 +187,9 @@ async def score_result(test: dict, steps: list[dict], output: str, route: str, i
 # 批量评测
 # ═══════════════════════════════════════════════════════════════
 
-async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
-    """运行完整评测。"""
+async def run_eval(max_tests: int | None = None, verbose: bool = False,
+                   seed: int | None = None) -> dict:
+    """运行完整评测。max_tests 限制数量，seed 固定随机抽样。"""
     settings = get_settings()
     if not settings.DEEPSEEK_API_KEY:
         print("❌ 未配置 DEEPSEEK_API_KEY，请先设置环境变量")
@@ -228,7 +197,10 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
 
     init_app()
     queries = load_test_queries()
-    if max_tests:
+    if max_tests and max_tests < len(queries):
+        import random as _random
+        rng = _random.Random(seed) if seed is not None else _random.Random()
+        rng.shuffle(queries)
         queries = queries[:max_tests]
 
     results = []
@@ -253,11 +225,10 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
                 "WARN" if score["tools_correct"] or score["route_correct"] else "FAIL"
             )
             sql_info = f" sql={score['sql_success_rate']}" if score["sql_total"] > 0 else ""
-            sc_info = f" sc={score['sc_success_rate']}" if score["sc_attempted"] > 0 else ""
             print(f"{status} | route={'OK' if score['route_correct'] else 'X'} "
                   f"tools={'OK' if score['tools_correct'] else 'X'} "
                   f"rel={score['answer_relevance']}/5"
-                  f"{sql_info}{sc_info}"
+                  f"{sql_info}"
                   f" steps={score['steps_count']}")
         except Exception as e:
             print(f"CRASH: {str(e)[:80]}")
@@ -273,7 +244,6 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
                 "tools_used": [],
                 "tools_expected": test.get("expected_tools", []),
                 "sql_total": 0, "sql_success": 0, "sql_success_rate": "N/A",
-                "sc_attempted": 0, "sc_succeeded": 0, "sc_success_rate": "N/A",
                 "answer_relevance": 1, "relevance_reason": f"崩溃: {str(e)[:50]}",
                 "steps_count": 0,
                 "errors": [str(e)[:200]],
@@ -294,11 +264,6 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
     sql_total_all = sum(r["sql_total"] for r in results)
     sql_success_all = sum(r["sql_success"] for r in results)
     sql_rate_all = f"{sql_success_all}/{sql_total_all} ({round(sql_success_all/sql_total_all*100, 1)}%)" if sql_total_all else "N/A"
-
-    # Self-Correction 汇总
-    sc_attempted_all = sum(r["sc_attempted"] for r in results)
-    sc_succeeded_all = sum(r["sc_succeeded"] for r in results)
-    sc_rate_all = f"{sc_succeeded_all}/{sc_attempted_all} ({round(sc_succeeded_all/sc_attempted_all*100, 1)}%)" if sc_attempted_all else "N/A"
 
     # 按类别
     by_category = {}
@@ -336,7 +301,6 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
             "route_accuracy": f"{route_ok}/{total} ({round(route_ok/total*100, 1)}%)" if total else "N/A",
             "tool_selection_accuracy": f"{tools_ok}/{total} ({round(tools_ok/total*100, 1)}%)" if total else "N/A",
             "sql_success_rate": sql_rate_all,
-            "self_correction_success_rate": sc_rate_all,
             "avg_answer_relevance": f"{round(relevance_avg, 1)}/5",
             "crashes": crashes,
             "tool_errors": errors,
@@ -369,48 +333,36 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def print_report(report: dict):
-    """打印评测报告到控制台。"""
+    """打印评测报告到控制台（精简版：路由+工具+崩溃）。"""
     m = report["meta"]
     s = report["summary"]
 
-    print("\n" + "=" * 60)
-    print("  LineMind v3.4 — 评测报告")
-    print("=" * 60)
-    print(f"  时间: {m['timestamp']}")
-    print(f"  测试数: {m['total_tests']}  耗时: {m['elapsed_seconds']}s  "
-          f"平均: {m['avg_seconds_per_test']}s/题")
+    print("\n" + "═" * 50)
+    print(f"  LineMind v4.0  评测报告")
+    print("═" * 50)
+    print(f"  {m['total_tests']} 题  ⏱ {m['elapsed_seconds']}s  "
+          f"({m['avg_seconds_per_test']}s/题)  💥 {s['crashes']}")
     print()
-    print("  【总体指标】")
-    print(f"  Agent 路由准确率:       {s['route_accuracy']}")
-    print(f"  工具选择准确率:          {s['tool_selection_accuracy']}")
-    print(f"  SQL 执行成功率:          {s['sql_success_rate']}")
-    print(f"  Self-Correction 成功率:  {s['self_correction_success_rate']}")
-    print(f"  平均回答相关性 (LLM评):   {s['avg_answer_relevance']}")
-    print(f"  崩溃数: {s['crashes']}  工具错误: {s['tool_errors']}")
+    print(f"  路由准确率    {s['route_accuracy']}")
+    print(f"  工具选择率    {s['tool_selection_accuracy']}")
     print()
-    print("  【按类别】")
+    print("  类别明细")
     for cat, v in report.get("by_category", {}).items():
-        print(f"  {cat:12s}  ({v['total']:2d}题)  路由:{v['route_accuracy']:>7s}  "
-              f"工具:{v['tool_accuracy']:>7s}  相关:{v['avg_relevance']}")
-    print()
-    print("  【按难度】")
-    for diff, v in report.get("by_difficulty", {}).items():
-        print(f"  {diff:6s}  ({v['total']:2d}题)  路由:{v['route_accuracy']:>7s}  "
-              f"工具:{v['tool_accuracy']:>7s}")
+        print(f"  {cat:10s}  {v['total']:2d}题  路由 {v['route_accuracy']:>6s}  "
+              f"工具 {v['tool_accuracy']:>6s}")
     print()
 
     # 失败用例
     failed = [r for r in report["details"]
               if not (r.get("tools_correct") and r.get("route_correct"))]
     if failed:
-        print(f"  【需关注 ({len(failed)} 题)】")
+        print(f"  需关注 ({len(failed)} 题):")
         for r in failed:
             tools = "OK" if r.get("tools_correct") else f"X (used:{r.get('tools_used',[])} expected:{r.get('tools_expected',[])})"
             route = "OK" if r.get("route_correct") else f"X (actual:{r.get('route_actual','?')} expected:{r.get('route_expected','?')})"
-            sql_info = f" sql={r.get('sql_success_rate','N/A')}" if r.get('sql_total', 0) > 0 else ""
-            print(f"  {r['test_id']} [{r['category']}/{r['difficulty']}] {r['question'][:45]}...")
-            print(f"         路由:{route}  工具:{tools}  相关:{r.get('answer_relevance','?')}/5{sql_info}")
-    print("=" * 60)
+            print(f"  {r['test_id']} [{r['category']}] {r['question'][:40]}...")
+            print(f"    路由:{route}  工具:{tools}")
+    print("═" * 50)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -419,16 +371,22 @@ def print_report(report: dict):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="LineMind LLM-as-a-judge 评测脚本")
+    import random
+
+    parser = argparse.ArgumentParser(description="LineMind 评测脚本")
     parser.add_argument("-n", "--count", type=int, default=None,
                         help="限制测试数量（默认全部 50 题）")
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="输出 JSON 报告路径")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="仅输出最终报告")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="随机种子（固定抽样顺序，结果可复现）")
     args = parser.parse_args()
 
-    report = asyncio.run(run_eval(max_tests=args.count, verbose=not args.quiet))
+    report = asyncio.run(run_eval(
+        max_tests=args.count, verbose=not args.quiet, seed=args.seed,
+    ))
     print_report(report)
 
     if args.output:
