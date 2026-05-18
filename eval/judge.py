@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-"""v3.4 LineMind LLM-as-a-judge 评测脚本 — 50 题测试集自动打分"""
+"""v3.4 LineMind LLM-as-a-judge 评测脚本 — 50 题测试集自动打分
+五项指标：路由准确率 / 工具选择准确率 / SQL 执行成功率 / Self-Correction 成功率 / 回答相关性
+路由和工具为客观匹配，SQL/Self-Correction 为 steps 解析，回答相关性由 DeepSeek 裁判 LLM 打分。
+"""
 
 import json
+import re
 import time
 import asyncio
 import sys
@@ -16,10 +20,17 @@ if sys.platform == "win32":
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
 
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
 from backend.agent import run_agent
 from backend import init_app
 from backend.config import get_settings
 
+
+# ═══════════════════════════════════════════════════════════════
+# 辅助函数
+# ═══════════════════════════════════════════════════════════════
 
 def load_test_queries(path: str | None = None) -> list[dict]:
     if path is None:
@@ -28,27 +39,117 @@ def load_test_queries(path: str | None = None) -> list[dict]:
         return json.load(f)
 
 
-def score_result(test: dict, steps: list[dict], output: str, route: str, intent: str) -> dict:
-    """对单个测试结果打分。
+def compute_sql_metrics(steps: list[dict]) -> dict:
+    """从 steps 解析 SQL 执行成功率。"""
+    sql_calls = [s for s in steps if "execute_sql" in s.get("action", "")]
+    total = len(sql_calls)
+    if total == 0:
+        return {"sql_total": 0, "sql_success": 0, "sql_success_rate": "N/A"}
+    success = sum(
+        1 for s in sql_calls
+        if '"error"' not in str(s.get("observation", "")).lower()
+        and not s.get("degraded", False)
+    )
+    return {
+        "sql_total": total,
+        "sql_success": success,
+        "sql_success_rate": f"{success}/{total} ({round(success/total*100, 1)}%)",
+    }
 
-    Returns:
-        {
-            "test_id": str,
-            "question": str,
-            "route_correct": bool,
-            "tools_correct": bool,
-            "tools_used": [str],
-            "tools_expected": [str],
-            "answer_relevance": int (1-5, estimated),
-            "steps_count": int,
-            "errors": [str],
-        }
-    """
+
+def detect_self_correction(steps: list[dict]) -> dict:
+    """从 steps 检测 Self-Correction 链路：SQL出错 → 修正 → 重试成功。"""
+    attempted = 0
+    succeeded = 0
+
+    i = 0
+    while i < len(steps):
+        action = steps[i].get("action", "")
+        obs = str(steps[i].get("observation", ""))
+        if "execute_sql" in action and '"error"' in obs.lower():
+            attempted += 1
+            for j in range(i + 1, len(steps)):
+                next_action = steps[j].get("action", "")
+                if "execute_sql" in next_action:
+                    next_obs = str(steps[j].get("observation", ""))
+                    if '"error"' not in next_obs.lower():
+                        succeeded += 1
+                    break
+        i += 1
+
+    if attempted == 0:
+        return {"sc_attempted": 0, "sc_succeeded": 0, "sc_success_rate": "N/A"}
+    return {
+        "sc_attempted": attempted,
+        "sc_succeeded": succeeded,
+        "sc_success_rate": f"{succeeded}/{attempted} ({round(succeeded/attempted*100, 1)}%)",
+    }
+
+
+async def judge_relevance(question: str, output: str, category: str = "") -> dict:
+    """裁判 LLM 对回答相关性打分 (1-5)。"""
+    if not output or len(output) < 5:
+        return {"score": 1, "reason": "空输出"}
+
+    # 根据问题类型调整评分标准
+    type_hints = {
+        "chat": "这是闲聊/问候类问题。只要友好得体地回应即可打4-5分，不需要提供技术信息。",
+        "action": "这是工单操作类问题（更新状态/分配/回复）。关键看是否执行了正确的操作。",
+        "query": "这是工单查询类问题。关键看是否返回了正确的工单数据。",
+        "analyze": "这是统计分析类问题。关键看分析结果是否合理、有无数据支撑。",
+        "knowledge": "这是知识检索类问题。关键看检索到的方案是否与问题相关。",
+        "multi-hop": "这是多步推理类问题。需要综合多个信息源，评分时关注推理逻辑。",
+    }
+
+    settings = get_settings()
+    llm = ChatOpenAI(
+        model=settings.DEEPSEEK_MODEL,
+        api_key=settings.DEEPSEEK_API_KEY,
+        base_url=settings.DEEPSEEK_BASE_URL,
+        temperature=0,
+        max_tokens=150,
+    )
+
+    type_hint = type_hints.get(category, "")
+
+    prompt = f"""你是AI助手回答质量的评测裁判。请根据问题类型给出合理评分（1-5）。
+
+通用评分标准:
+1分 — 回答完全错误、有幻觉、或拒绝回答
+2分 — 有相关信息但遗漏了用户问题的核心部分
+3分 — 基本回答了问题，可以接受
+4分 — 较好地回答了问题，覆盖全面
+5分 — 完美回答，表述清晰、信息准确且完整
+
+{type_hint}
+
+用户问题：{question[:500]}
+
+AI回答：{output[:1500]}
+
+回复格式: <分数> <一句话理由>"""
+
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        text = response.content.strip()
+        match = re.search(r'[1-5]', text)
+        if match:
+            return {"score": int(match.group()), "reason": text[:80]}
+        return {"score": 3, "reason": f"解析失败: {text[:50]}"}
+    except Exception as e:
+        return {"score": 3, "reason": f"LLM调用失败: {str(e)[:50]}"}
+
+
+# ═══════════════════════════════════════════════════════════════
+# 单题打分
+# ═══════════════════════════════════════════════════════════════
+
+async def score_result(test: dict, steps: list[dict], output: str, route: str, intent: str) -> dict:
+    """对单个测试结果打分，返回五项指标的完整评分。"""
     used = [s.get("action", "") for s in steps]
     expected = test.get("expected_tools", [])
-    expected_agent = test.get("expected_agent", "")
 
-    # 路由匹配（兼容 v2.0/v3.2/v4.0 不同返回格式）
+    # 1. 路由匹配
     agent_map = {
         "query": "query_agent",
         "analyze": "analyze_agent",
@@ -56,17 +157,17 @@ def score_result(test: dict, steps: list[dict], output: str, route: str, intent:
         "chat": "reporter",
     }
     expected_agent = test.get("expected_agent", "")
-    # v2.0: 无 route 无 intent → 无法评判路由，一律算对（纯工具评测）
     if not route and not intent:
         route_correct = True
-    # v3.2: route 是 chat/simple_query/complex，用 intent 判断
+        route_actual = "N/A"
     elif route in ("chat", "simple_query", "complex"):
         route_correct = (intent == expected_agent)
-    # v4.0: route 是 agent 节点名
+        route_actual = f"{route}/{intent}"
     else:
         route_correct = (route == agent_map.get(expected_agent, ""))
+        route_actual = route
 
-    # 工具匹配
+    # 2. 工具匹配
     if not expected:
         tools_correct = (len(used) == 0)
     else:
@@ -74,21 +175,20 @@ def score_result(test: dict, steps: list[dict], output: str, route: str, intent:
         used_set = set(used)
         tools_correct = expected_set.issubset(used_set) or bool(expected_set & used_set)
 
-    # 相关性预估（基于是否有合理steps和输出长度）
-    if not output or len(output) < 5:
-        relevance = 1
-    elif tools_correct and route_correct and len(output) > 50:
-        relevance = 5
-    elif tools_correct or route_correct:
-        relevance = 3 if len(output) > 30 else 2
-    else:
-        relevance = 2 if len(output) > 20 else 1
+    # 3. SQL 执行成功率
+    sql_metrics = compute_sql_metrics(steps)
 
-    # 错误检测
+    # 4. Self-Correction
+    sc_metrics = detect_self_correction(steps)
+
+    # 5. LLM 裁判回答相关性
+    relevance = await judge_relevance(test["question"], output, test["category"])
+
+    # 错误收集
     errors = []
     for s in steps:
         obs = str(s.get("observation", ""))
-        if '"error"' in obs.lower() or '"degraded": true' in obs.lower():
+        if '"error"' in obs.lower() or s.get("degraded", False):
             errors.append(s.get("action", "unknown"))
 
     return {
@@ -98,23 +198,29 @@ def score_result(test: dict, steps: list[dict], output: str, route: str, intent:
         "difficulty": test["difficulty"],
         "route_correct": route_correct,
         "route_expected": agent_map.get(expected_agent, "?"),
-        "route_actual": route,
+        "route_actual": route_actual,
         "tools_correct": tools_correct,
         "tools_used": used,
         "tools_expected": expected,
-        "answer_relevance": relevance,
+        "sql_total": sql_metrics["sql_total"],
+        "sql_success": sql_metrics["sql_success"],
+        "sql_success_rate": sql_metrics["sql_success_rate"],
+        "sc_attempted": sc_metrics["sc_attempted"],
+        "sc_succeeded": sc_metrics["sc_succeeded"],
+        "sc_success_rate": sc_metrics["sc_success_rate"],
+        "answer_relevance": relevance["score"],
+        "relevance_reason": relevance["reason"],
         "steps_count": len(steps),
         "errors": errors,
     }
 
 
-async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
-    """运行完整评测。
+# ═══════════════════════════════════════════════════════════════
+# 批量评测
+# ═══════════════════════════════════════════════════════════════
 
-    Args:
-        max_tests: 限制测试数量（None=全部）
-        verbose: 打印每条结果
-    """
+async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
+    """运行完整评测。"""
     settings = get_settings()
     if not settings.DEEPSEEK_API_KEY:
         print("❌ 未配置 DEEPSEEK_API_KEY，请先设置环境变量")
@@ -140,16 +246,19 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
             route = result.get("route", "")
             intent = result.get("intent", "")
 
-            score = score_result(test, steps, output, route, intent)
+            score = await score_result(test, steps, output, route, intent)
             results.append(score)
 
             status = "PASS" if score["tools_correct"] and score["route_correct"] else (
                 "WARN" if score["tools_correct"] or score["route_correct"] else "FAIL"
             )
+            sql_info = f" sql={score['sql_success_rate']}" if score["sql_total"] > 0 else ""
+            sc_info = f" sc={score['sc_success_rate']}" if score["sc_attempted"] > 0 else ""
             print(f"{status} | route={'OK' if score['route_correct'] else 'X'} "
                   f"tools={'OK' if score['tools_correct'] else 'X'} "
-                  f"rel={score['answer_relevance']}/5 "
-                  f"steps={score['steps_count']}")
+                  f"rel={score['answer_relevance']}/5"
+                  f"{sql_info}{sc_info}"
+                  f" steps={score['steps_count']}")
         except Exception as e:
             print(f"CRASH: {str(e)[:80]}")
             results.append({
@@ -158,10 +267,14 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
                 "category": test["category"],
                 "difficulty": test["difficulty"],
                 "route_correct": False,
+                "route_expected": "?",
+                "route_actual": "CRASH",
                 "tools_correct": False,
                 "tools_used": [],
                 "tools_expected": test.get("expected_tools", []),
-                "answer_relevance": 1,
+                "sql_total": 0, "sql_success": 0, "sql_success_rate": "N/A",
+                "sc_attempted": 0, "sc_succeeded": 0, "sc_success_rate": "N/A",
+                "answer_relevance": 1, "relevance_reason": f"崩溃: {str(e)[:50]}",
                 "steps_count": 0,
                 "errors": [str(e)[:200]],
                 "crash": True,
@@ -169,7 +282,7 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
 
     elapsed = time.time() - start_time
 
-    # 汇总统计
+    # ── 汇总统计 ──
     total = len(results)
     route_ok = sum(1 for r in results if r["route_correct"])
     tools_ok = sum(1 for r in results if r["tools_correct"])
@@ -177,7 +290,17 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
     crashes = sum(1 for r in results if r.get("crash"))
     errors = sum(len(r.get("errors", [])) for r in results)
 
-    # 按类别统计
+    # SQL 汇总
+    sql_total_all = sum(r["sql_total"] for r in results)
+    sql_success_all = sum(r["sql_success"] for r in results)
+    sql_rate_all = f"{sql_success_all}/{sql_total_all} ({round(sql_success_all/sql_total_all*100, 1)}%)" if sql_total_all else "N/A"
+
+    # Self-Correction 汇总
+    sc_attempted_all = sum(r["sc_attempted"] for r in results)
+    sc_succeeded_all = sum(r["sc_succeeded"] for r in results)
+    sc_rate_all = f"{sc_succeeded_all}/{sc_attempted_all} ({round(sc_succeeded_all/sc_attempted_all*100, 1)}%)" if sc_attempted_all else "N/A"
+
+    # 按类别
     by_category = {}
     for r in results:
         cat = r["category"]
@@ -190,7 +313,7 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
             by_category[cat]["route_ok"] += 1
         by_category[cat]["relevance_sum"] += r["answer_relevance"]
 
-    # 按难度统计
+    # 按难度
     by_difficulty = {}
     for r in results:
         diff = r["difficulty"]
@@ -212,6 +335,8 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
         "summary": {
             "route_accuracy": f"{route_ok}/{total} ({round(route_ok/total*100, 1)}%)" if total else "N/A",
             "tool_selection_accuracy": f"{tools_ok}/{total} ({round(tools_ok/total*100, 1)}%)" if total else "N/A",
+            "sql_success_rate": sql_rate_all,
+            "self_correction_success_rate": sc_rate_all,
             "avg_answer_relevance": f"{round(relevance_avg, 1)}/5",
             "crashes": crashes,
             "tool_errors": errors,
@@ -239,6 +364,10 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False) -> dict:
     return report
 
 
+# ═══════════════════════════════════════════════════════════════
+# 报告输出
+# ═══════════════════════════════════════════════════════════════
+
 def print_report(report: dict):
     """打印评测报告到控制台。"""
     m = report["meta"]
@@ -252,9 +381,11 @@ def print_report(report: dict):
           f"平均: {m['avg_seconds_per_test']}s/题")
     print()
     print("  【总体指标】")
-    print(f"  Agent 路由准确率:    {s['route_accuracy']}")
-    print(f"  工具选择准确率:       {s['tool_selection_accuracy']}")
-    print(f"  平均回答相关性:       {s['avg_answer_relevance']}")
+    print(f"  Agent 路由准确率:       {s['route_accuracy']}")
+    print(f"  工具选择准确率:          {s['tool_selection_accuracy']}")
+    print(f"  SQL 执行成功率:          {s['sql_success_rate']}")
+    print(f"  Self-Correction 成功率:  {s['self_correction_success_rate']}")
+    print(f"  平均回答相关性 (LLM评):   {s['avg_answer_relevance']}")
     print(f"  崩溃数: {s['crashes']}  工具错误: {s['tool_errors']}")
     print()
     print("  【按类别】")
@@ -270,22 +401,27 @@ def print_report(report: dict):
 
     # 失败用例
     failed = [r for r in report["details"]
-              if not (r["tools_correct"] and r["route_correct"])]
+              if not (r.get("tools_correct") and r.get("route_correct"))]
     if failed:
         print(f"  【需关注 ({len(failed)} 题)】")
         for r in failed:
-            tools = "OK" if r["tools_correct"] else f"X (used:{r['tools_used']} expected:{r['tools_expected']})"
-            route = "OK" if r["route_correct"] else f"X (actual:{r['route_actual']} expected:{r.get('route_expected','?')})"
+            tools = "OK" if r.get("tools_correct") else f"X (used:{r.get('tools_used',[])} expected:{r.get('tools_expected',[])})"
+            route = "OK" if r.get("route_correct") else f"X (actual:{r.get('route_actual','?')} expected:{r.get('route_expected','?')})"
+            sql_info = f" sql={r.get('sql_success_rate','N/A')}" if r.get('sql_total', 0) > 0 else ""
             print(f"  {r['test_id']} [{r['category']}/{r['difficulty']}] {r['question'][:45]}...")
-            print(f"         路由:{route}  工具:{tools}  相关:{r['answer_relevance']}/5")
+            print(f"         路由:{route}  工具:{tools}  相关:{r.get('answer_relevance','?')}/5{sql_info}")
     print("=" * 60)
 
 
+# ═══════════════════════════════════════════════════════════════
+# 入口
+# ═══════════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="LineMind 评测脚本")
+    parser = argparse.ArgumentParser(description="LineMind LLM-as-a-judge 评测脚本")
     parser.add_argument("-n", "--count", type=int, default=None,
-                        help="限制测试数量（默认全部）")
+                        help="限制测试数量（默认全部 50 题）")
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="输出 JSON 报告路径")
     parser.add_argument("-q", "--quiet", action="store_true",

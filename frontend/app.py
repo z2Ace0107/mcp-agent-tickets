@@ -5,14 +5,16 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import time
+from queue import Queue as SyncQueue
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 from backend import init_app
-from backend.agent import run_agent
+from backend.agent import run_agent_stream
 from backend.config import get_settings
 from backend.scheduler import check_urgent_alerts, get_cached_alerts, generate_report_text
 
@@ -1078,6 +1080,64 @@ if st.session_state.export_target:
             st.rerun()
 
 # ============================================================
+# v4.0: 流式输出 — 桥接 async generator 到 st.write_stream
+# ============================================================
+
+def _create_stream(user_input: str, chat_history_raw: list):
+    """将 graph.astream 事件转为 st.write_stream 可消费的文本流。
+    Returns: (text_generator, metadata_dict)
+    """
+    chat_history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in chat_history_raw
+    ]
+
+    result_queue: SyncQueue = SyncQueue()
+    metadata: dict = {}
+    _error: list[Exception] = []
+
+    async def _stream():
+        try:
+            async for event in run_agent_stream(user_input, chat_history):
+                result_queue.put(("event", event))
+            result_queue.put(("done", None))
+        except Exception as e:
+            _error.append(e)
+            result_queue.put(("error", None))
+
+    def _run():
+        asyncio.run(_stream())
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    def text_gen():
+        has_tokens = False
+        while True:
+            kind, value = result_queue.get()
+            if kind == "error":
+                raise _error[0] if _error else RuntimeError("Stream error")
+            if kind == "done":
+                break
+            if kind == "event":
+                if value["type"] == "progress":
+                    yield f"> {value['label']}\n\n"
+                elif value["type"] == "token":
+                    has_tokens = True
+                    yield value["content"]
+                elif value["type"] == "done":
+                    metadata["output"] = value["output"]
+                    metadata["steps"] = value["intermediate_steps"]
+                    metadata["route"] = value["route"]
+                    metadata["intent"] = value["intent"]
+                    metadata["rewritten_query"] = value.get("rewritten_query", "")
+                    if not has_tokens:
+                        yield value["output"]
+
+    return text_gen(), metadata
+
+
+# ============================================================
 # 聊天输入 + Agent
 # ============================================================
 
@@ -1100,50 +1160,32 @@ if prompt:
     if not HAS_API_KEY and not st.session_state.api_key_set:
         response_text = "请点击 ⚙️ 设置输入 DeepSeek API Key。"
         steps = []
+        route = intent = rewritten = ""
+        context_info = None
+        with st.chat_message("assistant"):
+            st.markdown(response_text)
     else:
-        with st.spinner("思考中..."):
-            try:
-                result = asyncio.run(run_agent(
-                    user_input=prompt,
-                    chat_history=[
-                        {"role": m["role"], "content": m["content"]}
-                        for m in st.session_state.chat_history
-                    ],
-                ))
-                response_text = result["output"]
-                steps = result["intermediate_steps"]
-                route = result.get("route", "")
-                intent = result.get("intent", "")
-                rewritten = result.get("rewritten_query", "")
-                context_info = result.get("context_info")
-            except Exception as e:
-                response_text = f"执行出错：{str(e)}"
-                steps = []
-                route = intent = rewritten = ""
-                context_info = None
+        try:
+            text_stream, metadata = _create_stream(prompt, st.session_state.chat_history)
+
+            with st.chat_message("assistant"):
+                st.write_stream(text_stream)
+
+            response_text = metadata.get("output", "")
+            steps = metadata.get("steps", [])
+            route = metadata.get("route", "")
+            intent = metadata.get("intent", "")
+            rewritten = metadata.get("rewritten_query", "")
+            context_info = None
+        except Exception as e:
+            response_text = f"执行出错：{str(e)}"
+            steps = []
+            route = intent = rewritten = ""
+            context_info = None
+            with st.chat_message("assistant"):
+                st.markdown(response_text)
 
     now_assist = datetime.now().strftime("%m-%d %H:%M")
-
-    # 当前轮次的临时消息对象（用于渲染）
-    current_msg = {
-        "role": "assistant", "content": response_text, "time": now_assist,
-        "steps": steps, "route": route, "intent": intent, "rewritten_query": rewritten,
-    }
-
-    with st.chat_message("assistant"):
-        st.markdown(convert_markdown_table(response_text))
-        render_charts_from_steps(steps)
-        if route:
-            icon, label, color = ROUTE_LABELS.get(route, ("", route, "#8B8B8B"))
-            st.markdown(
-                f'<span style="font-size:0.68rem;color:{color};margin-right:6px;">'
-                f'{icon} {label}</span>'
-                f'<span style="font-size:0.7rem;color:#6B7280;">{now_assist}</span>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption(now_assist)
-        render_reAct_steps(current_msg)
 
     st.session_state.chat_history.append({
         "role": "user", "content": prompt, "time": now_str, "steps": [],

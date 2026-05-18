@@ -21,6 +21,7 @@ def _create_llm(temperature: float = 0):
         base_url=settings.DEEPSEEK_BASE_URL,
         temperature=temperature,
         max_tokens=256,
+        streaming=True,
         extra_body={"thinking": {"type": "disabled"}},
     )
 

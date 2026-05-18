@@ -97,11 +97,14 @@ def index_solved_tickets() -> int:
     except Exception:
         pass
 
-    # 构建文档
-    documents = [f"{t['title']}\n{t['description']}" for t in tickets]
+    # 构建文档：标题 + 描述 + 解决方案（供向量检索）
+    documents = [
+        f"{t['title']}\n{t['description']}\n解决方案：{t['solution']}"
+        for t in tickets
+    ]
     ids = [t["ticket_id"] for t in tickets]
     metadatas = [
-        {"ticket_id": t["ticket_id"], "type": t["type"], "title": t["title"]}
+        {"ticket_id": t["ticket_id"], "type": t["type"], "title": t["title"], "solution": t["solution"]}
         for t in tickets
     ]
 
@@ -142,7 +145,7 @@ def search_solutions(query: str, n_results: int = 3) -> dict[str, Any]:
             "ticket_id": metadata.get("ticket_id", ""),
             "title": metadata.get("title", ""),
             "description": doc,
-            "solution": f"该工单已解决。原始问题：{metadata.get('title', '')}。建议参考此案例的处理方式。",
+            "solution": metadata.get("solution", ""),
         })
 
     return {

@@ -13,7 +13,7 @@ from langgraph.prebuilt import ToolNode
 
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 
 from backend.tools import (
     query_tickets,
@@ -200,6 +200,7 @@ def _create_llm(temperature: float | None = None) -> ChatOpenAI:
         base_url=settings.DEEPSEEK_BASE_URL,
         temperature=temperature if temperature is not None else settings.LLM_TEMPERATURE,
         max_tokens=settings.LLM_MAX_TOKENS,
+        streaming=True,
         extra_body={"thinking": {"type": "disabled"}},
     )
 
@@ -463,7 +464,11 @@ async def run_graph_stream(
     user_input: str,
     chat_history: list[dict[str, str]] | None = None,
 ):
-    """v4.0: 流式运行 LangGraph 图，yield 节点进度 + 最终结果。"""
+    """v4.0: 流式运行 LangGraph 图，yield 节点进度 + token + 最终结果。
+
+    stream_mode=["updates", "messages"] — updates 给进度，messages 给逐字 token。
+    仅 reporter 节点的 token 会流式输出到前端。
+    """
     logger.info(f"[graph:stream] 开始: '{user_input[:60]}...'")
     graph = build_graph()
 
@@ -492,29 +497,48 @@ async def run_graph_stream(
 
     start_time = time.time()
     final_state = initial_state
+    reported_nodes: set[str] = set()
 
-    async for event in graph.astream(initial_state, stream_mode="updates"):
-        for node_name, update in event.items():
-            for key, value in update.items():
-                if key == "messages":
-                    existing = final_state.get("messages", [])
-                    final_state["messages"] = existing + list(value) if value else existing
-                else:
-                    final_state[key] = value
+    async for mode, data in graph.astream(initial_state, stream_mode=["updates", "messages"]):
+        if mode == "updates":
+            for node_name, update in data.items():
+                node_reported = node_name in reported_nodes
+                reported_nodes.add(node_name)
 
-            label = NODE_LABEL.get(node_name, node_name)
-            steps = final_state.get("intermediate_steps", [])
-            route = final_state.get("route", "")
-            intent = final_state.get("intent", "")
+                for key, value in update.items():
+                    if key == "messages":
+                        existing = final_state.get("messages", [])
+                        final_state["messages"] = existing + list(value) if value else existing
+                    else:
+                        final_state[key] = value
 
-            yield {
-                "type": "progress",
-                "node": node_name,
-                "label": label,
-                "steps": steps,
-                "route": route,
-                "intent": intent,
-            }
+                if not node_reported:
+                    label = NODE_LABEL.get(node_name, node_name)
+                    steps = final_state.get("intermediate_steps", [])
+                    route = final_state.get("route", "")
+                    intent = final_state.get("intent", "")
+
+                    yield {
+                        "type": "progress",
+                        "node": node_name,
+                        "label": label,
+                        "steps": steps,
+                        "route": route,
+                        "intent": intent,
+                    }
+
+        elif mode == "messages":
+            message, metadata = data
+            node_name = metadata.get("langgraph_node", "")
+            # 仅 reporter 节点的纯文本 token 流式输出
+            if (
+                node_name == "reporter"
+                and isinstance(message, AIMessageChunk)
+                and message.content
+                and not getattr(message, "tool_calls", None)
+                and not getattr(message, "tool_call_chunks", None)
+            ):
+                yield {"type": "token", "content": message.content, "node": node_name}
 
     output = extract_final_output(final_state.get("messages", []))
     steps = final_state.get("intermediate_steps", [])
