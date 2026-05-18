@@ -7,118 +7,81 @@
 ```powershell
 cd "E:\develop\claude\项目开发2\LineMind\linemind"
 & e:\develop\claude\.venv\Scripts\Activate.ps1
-rm data/tickets.db -ErrorAction SilentlyContinue   # 首次或重置
 streamlit run frontend/app.py
 # → http://localhost:8501
 ```
 
-## 当前状态：v4.0 实习优化 (2026-05-18)
+## 当前状态：v4.0 P0 完成 (2026-05-18)
 
 ```
-v3.3 ✅ → 修复(8项) ✅ → v4.0 开发 ✅✅✅✅✅ → P0 瘦身 → P1 打磨 → 发布
+v3.5 ✅ → P0 瘦身 ✅ → P1 打磨 → P2 增强
 ```
 
-**目标：核心扎实、有亮点、不贪多。** 面向实习岗位，展示架构能力 + 工程化思维 + 数据驱动迭代。
+## P0 已完成
 
-### 本轮已完成
+| # | 事项 | 文件 | 提交 |
+|:---:|------|------|:---:|
+| 1 | Reporter 数据优先 | `prompts.py` | ✅ f59047a |
+| 2 | 砍 Self-Correction | `graph.py`, `judge.py` | ✅ f59047a |
+| 3 | Chat 评分豁免 | `judge.py` | ✅ f59047a |
+| 4 | 评测报告简化 | `judge.py` | ✅ f59047a |
+| 5 | --seed 参数 | `judge.py` | ✅ f59047a |
+| 6 | README v4.0 + Mermaid 架构图 | `README.md` | ✅ 0a4cfc6 |
+| 7 | CHANGELOG/AGENTS 同步更新 | `CHANGELOG.md`, `AGENTS.md` | ✅ f59047a |
+| 8 | DevQuest README Mermaid 图 | `../DevQuest/README.md` | ✅ 1ff7427 |
 
-| 事项 | 文件 | 状态 |
-|------|------|:---:|
-| RAG P0: solution 字段补完 | `database.py`, `rag.py` | ✅ |
-| LLM-as-judge 三项指标 | `eval/judge.py` | ✅ |
-| 写操作守卫 | `prompts.py` | ✅ |
-| Supervisor 路由边界 | `prompts.py` | ✅ |
-| 裁判 prompt 类型感知 | `eval/judge.py` | ✅ |
-| **流式输出** | `graph.py`, `app.py`, `agent.py`, 5 nodes | ✅ |
+## 剩余计划
 
-### P0 — 做减法（今天）
-
-| # | 事项 | 文件 | 说明 |
-|---|------|------|------|
-| 1 | **砍 Self-Correction** | `graph.py`, `judge.py` | 50 题触发 1 次，性价比为零 |
-| 2 | **Reporter 数据优先** | `prompts.py` | 数据占 80%，建议 1-2 句 |
-| 3 | **Chat 评分豁免** | `eval/judge.py` | 规则判定替代 LLM 打分 |
-| 4 | **测评分层** | `eval/judge.py` | 加 `--seed`，10 题日常 / 50 题发版 |
-| 5 | **精简评测指标** | `eval/judge.py` | 只留路由+工具+崩溃率 |
-
-### P1 — 打磨（明天）
+### P1 — 打磨
 
 | # | 事项 | 说明 |
-|---|------|------|
-| 6 | **README v4.0** | 三步法故事 + 能力矩阵 + 评测数据 + 架构图 |
-| 7 | **录 GIF** | 流式输出 + 图表生成 |
-| 8 | **Git tag v4.0.0** | 收尾发布 |
+|:---:|------|------|
+| 1 | **录 GIF** | 打开 app，录一段"打字提问 → 进度标签 → 流式输出 + 图表"，放 README 顶部 |
+| 2 | **Git tag v4.0.0** | P1 完成后打 tag |
+| 3 | **RAG 双通道** | 从 DevQuest 移植 FTS5 + RRF 到 LineMind `rag.py`（~80 行），让复用故事做实 |
+
+### P2 — 增强
+
+| # | 事项 | 说明 |
+|:---:|------|------|
+| 4 | **流式 thinking 区域** | agent token 也流式输出到折叠区域，解决"前面卡后面快"的体验 |
+| 5 | **飞书 Webhook** | Reporter 输出推送飞书群，架构图已预留接口 |
 
 ---
 
-## 评测数据速查
-
-### v4.0+fix 全量 50 题（最新）
+## 架构速查
 
 ```
-路由: 45/50 (90.0%)    工具: 40/50 (80.0%)
-SQL:  12/13 (92.3%)     SC: 0/1 (0.0%)
-LLM 相关: 2.7/5
-耗时: 31.9min  崩溃: 0
+用户输入 → supervisor_node(拦截+分类) → Query/Analyze/Knowledge
+  → tool_executor(超时/重试/熔断/只读守卫) → Reporter(数据优先) → st.write_stream
 ```
 
-### 按类别
-
-| 类别 | 路由 | 工具 | LLM相关 |
-|------|:---:|:---:|:---:|
-| query (12) | 100% | 91.7% | 3.5/5 |
-| knowledge (8) | 87.5% | 87.5% | 3.1/5 |
-| analyze (12) | 83.3% | 83.3% | 2.9/5 |
-| action (8) | 100% | 75% | 2.4/5 |
-| multi-hop (6) | 66.7% | 33.3% | 1.5/5 |
-| chat (4) | 100% | 100% | 1.0/5 |
-
-### 版本演进对比
-
-| | v2.0 | v3.2 | v4.0 | v4.0+fix |
-|------|:---:|:---:|:---:|:---:|
-| 路由 | N/A | 74% | 88% | **90%** |
-| 工具 | 80% | 82% | 76% | **80%** |
-| SQL | — | — | — | **92.3%** |
-| SC | — | — | — | **0/1** |
-| 相关 | 4.6* | 3.9* | 4.4* | **2.7/5** |
-| 工具数 | 9 | 9 | 12 | 12 |
-
-### 能力矩阵（面试用）
-
-| 能力 | v2.0 | v3.2 | v4.0 |
-|------|:---:|:---:|:---:|
-| 基础工单查询 | ✅ | ✅ | ✅ |
-| 意图路由 | ❌ | ✅ 74% | ✅ 90% |
-| SQL 复杂查询 | ❌ | ❌ | ✅ |
-| Python 沙箱图表 | ❌ | ❌ | ✅ |
-| Schema 探索 | ❌ | ❌ | ✅ |
-| 安全熔断 | ❌ | ❌ | ✅ |
-
----
-
-## 架构
-
-```
-Supervisor(路由) → {Query(6) | Analyze(3) | Knowledge(3)} → Reporter
-    ↑              tool_executor                          │
-    └─────────────────────────────────────────────────────┘
-```
-13 张表（tickets 含 solution 列）| 5 Agent | 12 MCP 工具 | 流式输出
-
----
+- 5 Agent（Supervisor + Query + Analyze + Knowledge + Reporter）
+- 12 MCP 工具（JSON-RPC 2.0 stdio）
+- SQLite 13 表 + ChromaDB 向量检索
+- 50 题评测集，路由 90%，工具 80%，0 崩溃
 
 ## 评测命令
 
 ```bash
-# 日常快速迭代（10题，~4min）
+# 日常快速迭代（10 题，~4min）
 python eval/judge.py -n 10 --seed 42
 
-# 发版全量（50题，~30min）
-python eval/judge.py -n 50 -o eval/report.json --seed 42
+# 发版全量（50 题，~30min）
+python eval/judge.py -n 50 -o eval/report.json
 ```
 
----
+## 关键文件
+
+| 文件 | 职责 |
+|------|------|
+| `backend/graph.py` | LangGraph 状态图 + 流式输出 `run_graph_stream` |
+| `backend/agent.py` | Agent 入口，25 行 |
+| `backend/tools.py` | 12 MCP 工具 |
+| `backend/prompts.py` | 所有 system prompt |
+| `backend/nodes/*.py` | 5 Agent 节点 |
+| `frontend/app.py` | Streamlit 流式 UI |
+| `eval/judge.py` | 自动化评测 |
 
 ## 环境变量
 
@@ -128,23 +91,10 @@ BAIDU_API_KEY=bce-v3/ALTAK-xxx
 EMBEDDING_API_KEY=sk-xxx     # 阿里百炼
 ```
 
-## 文档结构
-
-```
-E:\develop\claude\项目开发2\LineMind\
-├── AGENTS.md              ← 主线开发文档
-└── linemind/              ← git repo
-    ├── HANDOFF.md         ← 本文件
-    ├── README.md          ← 待 v4.0 重写
-    ├── eval/              ← 评测脚本 + 报告
-    │   ├── judge.py
-    │   ├── test_queries.json
-    │   └── report_v4.0_final.json
-    └── ...
-```
-
 ## Git
 
 ```
-56c76c4 feat: RAG P0 solution字段补完 + LLM-as-judge 三项指标 + prompt修复
+0a4cfc6 fix: Mermaid 图引号转义
+f59047a v4.0 P0: 瘦身优化
+3f74476 v3.5: 流式输出完成
 ```
