@@ -18,7 +18,7 @@ graph TB
 
     subgraph AGENT[" Agent 编排层 — LangGraph StateGraph "]
         direction TB
-        SUP["supervisor_node<br/>快捷拦截（"你好"）→ 跳过 LLM<br/>LLM(t=0) 意图分类 → 路由分发"]
+        SUP["supervisor_node<br/>快捷拦截「你好」→ 跳过 LLM<br/>LLM(t=0) 意图分类 → 路由分发"]
         Q["Query Agent（6工具）<br/>query_tickets · execute_sql<br/>get_schema · get_detail<br/>update_status · assign"]
         A["Analyze Agent（3工具）<br/>analyze_tickets<br/>execute_python<br/>recommend_tickets"]
         K["Knowledge Agent（3工具）<br/>search_solutions<br/>web_search · get_detail"]
