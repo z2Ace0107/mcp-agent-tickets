@@ -6,52 +6,77 @@
 
 ## 架构
 
-```
-                        ┌──────────────────────────┐
-                        │     Streamlit 前端        │
-                        │  深色主题 · st.write_stream│
-                        └────────────┬─────────────┘
-                                     │ 逐 token 渲染
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       LangGraph 状态图                               │
-│                                                                      │
-│  ┌───────────────┐                                                   │
-│  │   预处理       │  LLM(t=0) 意图分类 + 问题改写 + 闲聊拦截(省60%Token)│
-│  └───────┬───────┘                                                   │
-│          ▼                                                           │
-│  ┌───────────────┐   ┌──────────────────────────────────────────┐   │
-│  │   Supervisor   │──▶│ Query(6工具)  Analyze(3工具)  Knowledge(3工具)│
-│  │   二级路由分发  │   │ 工单查询/SQL  统计分析/图表   RAG检索/联网  │   │
-│  └───────────────┘   └──────────────────┬───────────────────────┘   │
-│                                         │                            │
-│                                         ▼                            │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                      tool_executor                             │   │
-│  │  超时控制(10s/30s) → 指数退避重试(200→400→800ms) → 熔断降级  │   │
-│  │  只读SQL守卫 · Python沙箱(图表捕获) · 工具耗时追踪             │   │
-│  └──────────────────────────────┬───────────────────────────────┘   │
-│                                  │                                   │
-│                                  ▼                                   │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                        Reporter                                │   │
-│  │  数据优先结构化回复 · matplotlib图表 · 逐token流式输出          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-         │                     │                     │
-         ▼                     ▼                     ▼
-┌─────────────────┐  ┌──────────────┐  ┌──────────────────────┐
-│     SQLite       │  │   ChromaDB   │  │     MCP Server       │
-│  13表星型Schema  │  │  向量语义检索 │  │  12工具·JSON-RPC 2.0 │
-│  30条种子工单    │  │  阿里百炼v3  │  │  stdio 模式          │
-└─────────────────┘  └──────────────┘  └──────────────────────┘
-                                             │
-                              ┌──────────────┴──────────────┐
-                              ▼                             ▼
-                    ┌──────────────┐              ┌──────────────┐
-                    │  飞书 Webhook │              │  Markdown 下载│
-                    │  (规划中)     │              │  备注导出     │
-                    └──────────────┘              └──────────────┘
+```mermaid
+graph TB
+    subgraph FRONTEND[" 前端层 — Streamlit "]
+        direction TB
+        UI["深色主题 UI<br/>幽灵卡片 · 820px 阅读宽度"]
+        STREAM["st.write_stream 流式渲染<br/>进度标签 + 逐 token 输出"]
+        CHARTS["图表渲染<br/>matplotlib → base64 → Image"]
+        SIDEBAR["侧边栏工具箱<br/>告警徽标 · 对话历史 · 实时监控 · 日报"]
+    end
+
+    subgraph AGENT[" Agent 编排层 — LangGraph StateGraph "]
+        direction TB
+        SUP["supervisor_node<br/>快捷拦截（"你好"）→ 跳过 LLM<br/>LLM(t=0) 意图分类 → 路由分发"]
+        Q["Query Agent（6工具）<br/>query_tickets · execute_sql<br/>get_schema · get_detail<br/>update_status · assign"]
+        A["Analyze Agent（3工具）<br/>analyze_tickets<br/>execute_python<br/>recommend_tickets"]
+        K["Knowledge Agent（3工具）<br/>search_solutions<br/>web_search · get_detail"]
+        REP["Reporter<br/>数据优先结构化回复<br/>execute_python 图表生成<br/>逐 token 流式输出"]
+        SUP --> Q & A & K
+        Q & A & K --> REP
+    end
+
+    subgraph SAFETY[" 安全与执行层 "]
+        direction TB
+        EXEC["tool_executor_node"]
+        TIMEOUT["超时控制<br/>10s 常规 / 30s 联网"]
+        RETRY["指数退避重试<br/>200ms → 400ms → 800ms"]
+        CB["熔断降级<br/>连续 3 次失败自动熔断"]
+        GUARD["只读 SQL 守卫<br/>查询场景禁止写操作"]
+    end
+
+    subgraph TOOLS[" MCP 工具层 — 12 工具 · JSON-RPC 2.0 stdio "]
+        direction LR
+        T1["查询: query_tickets<br/>get_detail · get_schema"]
+        T2["分析: analyze_tickets<br/>recommend · execute_python"]
+        T3["操作: update_status<br/>assign · add_reply"]
+        T4["知识: search_solutions<br/>web_search"]
+        T5["数据: execute_sql"]
+    end
+
+    subgraph RAG[" RAG 检索层 "]
+        CHROMA["ChromaDB 向量检索<br/>阿里百炼 text-embedding-v3"]
+        FTS["FTS5 全文索引（规划中）<br/>工单编号 · 设备型号 · 术语"]
+        RRF["RRF 融合排序（规划中）<br/>双通道共识自动胜出"]
+        CHROMA --> FTS --> RRF
+    end
+
+    subgraph DATA[" 数据层 — SQLite 13 表星型 Schema "]
+        direction LR
+        FACTS["事实表<br/>tickets · quality_metrics<br/>ticket_replies"]
+        DIMS["维度表<br/>equipment · production_lines<br/>materials"]
+        META["元数据表<br/>conversations · messages<br/>agent_actions"]
+    end
+
+    subgraph EVAL[" 评测层 "]
+        direction TB
+        TEST["50 题测试集<br/>query / analyze / knowledge<br/>action / multi-hop / chat"]
+        JUDGE["规则判定<br/>路由准确率 · 工具选择率<br/>崩溃率"]
+        COMPARE["版本对比<br/>v2.0 → v3.2 → v4.0"]
+        TEST --> JUDGE --> COMPARE
+    end
+
+    UI --> STREAM
+    STREAM --> REP
+    Q & A & K --> EXEC
+    EXEC --> TIMEOUT --> RETRY --> CB
+    GUARD -.-> EXEC
+    EXEC --> T1 & T2 & T3 & T4 & T5
+    T1 & T5 --> FACTS
+    K --> T4
+    K --> CHROMA
+    SUP --> EVAL
 ```
 
 ## 相比传统 ReAct Agent 的核心优化
