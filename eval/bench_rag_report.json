@@ -1,0 +1,750 @@
+{
+  "indexed_tickets": 8,
+  "num_queries": 15,
+  "rrf_k": 60,
+  "queries": [
+    {
+      "id": "R01",
+      "query": "CNC主轴异响怎么处理",
+      "expected": [
+        "WO-20260428-001"
+      ],
+      "note": "英文缩写CNC，FTS5关键词通道能直接命中",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260428-001",
+          "WO-20260511-023",
+          "WO-20260420-004"
+        ],
+        "top3_sim": [
+          0.7143,
+          0.5529,
+          0.4893
+        ],
+        "time_ms": 921.72
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260428-001",
+          "WO-20260511-023",
+          "WO-20260420-004"
+        ],
+        "top3_sim": [
+          0.8929,
+          0.5529,
+          0.4893
+        ],
+        "top3_sources": [
+          "vector+keyword",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1079.53
+      }
+    },
+    {
+      "id": "R02",
+      "query": "AGV搬运车导航偏差怎么修的",
+      "expected": [
+        "WO-20260420-004"
+      ],
+      "note": "英文缩写AGV/SLAM，FTS5关键词通道优势",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260420-004",
+          "WO-20260511-023",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.6762,
+          0.4945,
+          0.4937
+        ],
+        "time_ms": 2604.21
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260420-004",
+          "WO-20260511-023",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.8453,
+          0.4945,
+          0.4937
+        ],
+        "top3_sources": [
+          "vector+keyword",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 918.29
+      }
+    },
+    {
+      "id": "R03",
+      "query": "SMT回流焊温度曲线漂移虚焊率高",
+      "expected": [
+        "WO-20260422-016"
+      ],
+      "note": "英文缩写SMT/BGA/QFP，双通道各自命中",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260422-016",
+          "WO-20260425-008",
+          "WO-20260427-020"
+        ],
+        "top3_sim": [
+          0.7649,
+          0.5306,
+          0.5079
+        ],
+        "time_ms": 1119.55
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260422-016",
+          "WO-20260425-008",
+          "WO-20260427-020"
+        ],
+        "top3_sim": [
+          0.9561,
+          0.5306,
+          0.5079
+        ],
+        "top3_sources": [
+          "vector+keyword",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 908.3
+      }
+    },
+    {
+      "id": "R04",
+      "query": "电镀件盐雾试验出现锈点",
+      "expected": [
+        "WO-20260425-008"
+      ],
+      "note": "纯中文语义匹配",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260425-008",
+          "WO-20260422-016",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.7939,
+          0.5439,
+          0.5248
+        ],
+        "time_ms": 3353.63
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260425-008",
+          "WO-20260422-016",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.7939,
+          0.5439,
+          0.5248
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1258.17
+      }
+    },
+    {
+      "id": "R05",
+      "query": "冲压车间安全光幕被短接",
+      "expected": [
+        "WO-20260503-010"
+      ],
+      "note": "纯中文精确描述",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260503-010",
+          "WO-20260420-004",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          0.8161,
+          0.5569,
+          0.5339
+        ],
+        "time_ms": 1068.28
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260503-010",
+          "WO-20260420-004",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          1.0,
+          0.5569,
+          0.5339
+        ],
+        "top3_sources": [
+          "vector+keyword",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 993.46
+      }
+    },
+    {
+      "id": "R06",
+      "query": "叉车充电区通风系统故障氢气积聚",
+      "expected": [
+        "WO-20260430-012"
+      ],
+      "note": "含元素名氢气，中文场景",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260430-012",
+          "WO-20260503-010",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          0.8072,
+          0.5177,
+          0.5159
+        ],
+        "time_ms": 1907.77
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260430-012",
+          "WO-20260503-010",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          0.8072,
+          0.5177,
+          0.5159
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1815.89
+      }
+    },
+    {
+      "id": "R07",
+      "query": "冷却循环水藻类滋生换热效率下降",
+      "expected": [
+        "WO-20260427-020"
+      ],
+      "note": "纯中文环境监测类",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260427-020",
+          "WO-20260422-016",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          0.7474,
+          0.5281,
+          0.4798
+        ],
+        "time_ms": 1214.28
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260427-020",
+          "WO-20260422-016",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          0.7474,
+          0.5281,
+          0.4798
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 896.7
+      }
+    },
+    {
+      "id": "R08",
+      "query": "数控磨床砂轮动平衡失效表面振纹",
+      "expected": [
+        "WO-20260511-023"
+      ],
+      "note": "中文技术术语，向量通道",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260511-023",
+          "WO-20260428-001",
+          "WO-20260420-004"
+        ],
+        "top3_sim": [
+          0.8435,
+          0.5421,
+          0.5192
+        ],
+        "time_ms": 1190.35
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260511-023",
+          "WO-20260428-001",
+          "WO-20260420-004"
+        ],
+        "top3_sim": [
+          0.8435,
+          0.5421,
+          0.5192
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 2678.46
+      }
+    },
+    {
+      "id": "R09",
+      "query": "主轴轴承磨损需要更换",
+      "expected": [
+        "WO-20260428-001"
+      ],
+      "note": "同义改写 — 没说CNC，用轴承磨损替代异响",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260428-001",
+          "WO-20260511-023",
+          "WO-20260420-004"
+        ],
+        "top3_sim": [
+          0.58,
+          0.5532,
+          0.5073
+        ],
+        "time_ms": 1252.02
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260428-001",
+          "WO-20260511-023",
+          "WO-20260420-004"
+        ],
+        "top3_sim": [
+          0.58,
+          0.5532,
+          0.5073
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 887.91
+      }
+    },
+    {
+      "id": "R10",
+      "query": "AGV撞到东西了",
+      "expected": [
+        "WO-20260420-004"
+      ],
+      "note": "口语化描述，关键字少，考验语义检索",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260420-004",
+          "WO-20260503-010",
+          "WO-20260428-001"
+        ],
+        "top3_sim": [
+          0.6228,
+          0.5196,
+          0.4779
+        ],
+        "time_ms": 1213.16
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260420-004",
+          "WO-20260503-010",
+          "WO-20260428-001"
+        ],
+        "top3_sim": [
+          0.7785,
+          0.5196,
+          0.4779
+        ],
+        "top3_sources": [
+          "vector+keyword",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1690.59
+      }
+    },
+    {
+      "id": "R11",
+      "query": "电路板BGA虚焊",
+      "expected": [
+        "WO-20260422-016"
+      ],
+      "note": "用BGA/虚焊替代回流焊温度异常，含英文缩写",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260422-016",
+          "WO-20260425-008",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.5885,
+          0.4998,
+          0.4842
+        ],
+        "time_ms": 1085.08
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260422-016",
+          "WO-20260425-008",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.7356,
+          0.4998,
+          0.4842
+        ],
+        "top3_sources": [
+          "vector+keyword",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1119.89
+      }
+    },
+    {
+      "id": "R12",
+      "query": "防爆排风机不转了",
+      "expected": [
+        "WO-20260430-012"
+      ],
+      "note": "口语化改写 — 用风机不转替代通风系统故障",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260430-012",
+          "WO-20260428-001",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.5564,
+          0.5354,
+          0.5322
+        ],
+        "time_ms": 1838.3
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260430-012",
+          "WO-20260428-001",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.5564,
+          0.5354,
+          0.5322
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1238.89
+      }
+    },
+    {
+      "id": "R13",
+      "query": "钝化膜不致密导致生锈",
+      "expected": [
+        "WO-20260425-008"
+      ],
+      "note": "技术细节改写 — 用钝化膜替代电镀件盐雾",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260425-008",
+          "WO-20260511-023",
+          "WO-20260422-016"
+        ],
+        "top3_sim": [
+          0.6411,
+          0.5416,
+          0.5297
+        ],
+        "time_ms": 870.72
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260425-008",
+          "WO-20260511-023",
+          "WO-20260422-016"
+        ],
+        "top3_sim": [
+          0.6411,
+          0.5416,
+          0.5297
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1083.91
+      }
+    },
+    {
+      "id": "R14",
+      "query": "氢气浓度报警怎么处理",
+      "expected": [
+        "WO-20260430-012"
+      ],
+      "note": "用氢气浓度替代叉车充电区",
+      "is_negative": false,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260430-012",
+          "WO-20260425-008",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.6101,
+          0.5082,
+          0.5025
+        ],
+        "time_ms": 2031.55
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260430-012",
+          "WO-20260425-008",
+          "WO-20260503-010"
+        ],
+        "top3_sim": [
+          0.6101,
+          0.5082,
+          0.5025
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1150.81
+      }
+    },
+    {
+      "id": "R15",
+      "query": "喷涂机械臂定位不准漆膜厚度不均",
+      "expected": [],
+      "note": "相关工单为处理中状态，不在已解决索引中。预期无高置信结果",
+      "is_negative": true,
+      "vector": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260511-023",
+          "WO-20260420-004",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          0.5457,
+          0.5369,
+          0.5263
+        ],
+        "time_ms": 1422.31
+      },
+      "dual": {
+        "mrr": 1.0,
+        "hit1": true,
+        "hit3": true,
+        "hit5": true,
+        "top3": [
+          "WO-20260511-023",
+          "WO-20260420-004",
+          "WO-20260425-008"
+        ],
+        "top3_sim": [
+          0.5457,
+          0.5369,
+          0.5263
+        ],
+        "top3_sources": [
+          "vector",
+          "vector",
+          "vector"
+        ],
+        "time_ms": 1214.49
+      }
+    }
+  ],
+  "summary": {
+    "vector_channel": {
+      "mrr": 1.0,
+      "hit@1": "15/15 (100.0%)",
+      "hit@3": "15/15 (100.0%)",
+      "hit@5": "15/15 (100.0%)",
+      "avg_confidence": 0.6973
+    },
+    "dual_channel": {
+      "mrr": 1.0,
+      "hit@1": "15/15 (100.0%)",
+      "hit@3": "15/15 (100.0%)",
+      "hit@5": "15/15 (100.0%)",
+      "avg_confidence": 0.7706
+    },
+    "comparison": {
+      "mrr_improvement": "0.0%",
+      "confidence_boost": "10.5%",
+      "dual_source_queries": "6/14",
+      "dual_wins": 0,
+      "vector_wins": 0,
+      "ties": 15
+    },
+    "negative_query_pass": "1/1"
+  }
+}

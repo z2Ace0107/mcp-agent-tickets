@@ -559,39 +559,40 @@ def render_reAct_steps(msg: dict):
             elif obs:
                 st.code(obs, language="json")
 
-            # 图表渲染（execute_python 生成的 chart_images）
-            chart_images = step.get("chart_images", [])
-            if chart_images:
-                import base64 as _b64
-                n = len(chart_images)
-                if n == 1:
-                    l, c, r = st.columns([1.5, 7, 1.5])
-                    with c:
-                        st.image(_b64.b64decode(chart_images[0]), use_container_width=True)
-                else:
-                    for ci, img_b64 in enumerate(chart_images):
-                        st.image(_b64.b64decode(img_b64), use_container_width=True)
+            # 图表渲染（execute_python 生成）
+            _render_python_charts(step)
 
             if si < len(steps):
                 st.divider()
 
 
+def _render_python_charts(step: dict) -> None:
+    """渲染 execute_python 生成的图表（Plotly 优先，matplotlib 兜底）。"""
+    import base64 as _b64
+    import plotly.graph_objects as _go
+
+    plotly_charts = step.get("plotly_charts", [])
+    chart_images = step.get("chart_images", [])
+
+    for chart_dict in plotly_charts:
+        try:
+            fig = _go.Figure(chart_dict)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            pass
+
+    # matplotlib PNG 兜底
+    if chart_images:
+        for img_b64 in chart_images:
+            l, c, r = st.columns([1.5, 7, 1.5])
+            with c:
+                st.image(_b64.b64decode(img_b64), use_container_width=True)
+
 
 def render_charts_from_steps(steps: list):
-    """从步骤列表中提取图表 base64 数据并渲染。"""
-    import base64 as _b64
+    """从步骤列表中提取图表数据并渲染。"""
     for step in steps:
-        charts = step.get("chart_images", [])
-        if charts:
-            n = len(charts)
-            if n == 1:
-                # 单图居中，占 70% 宽度
-                l, c, r = st.columns([1.5, 7, 1.5])
-                with c:
-                    st.image(_b64.b64decode(charts[0]), use_container_width=True)
-            else:
-                for ci, img_b64 in enumerate(charts):
-                    st.image(_b64.b64decode(img_b64), use_container_width=True)
+        _render_python_charts(step)
 
 
 def save_current_conversation():

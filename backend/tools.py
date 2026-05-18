@@ -21,11 +21,12 @@ def query_tickets(
     ticket_type: str | None = None,
     status: str | None = None,
     date_range: str | None = None,
+    priority: str | None = None,
 ) -> list[dict[str, Any]]:
     """按条件筛选工单列表。
 
     Args:
-        ticket_type: 工单类型，可选值：退款/技术/咨询/投诉。为None则不筛选类型。
+        ticket_type: 工单类型，可选值：设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测。为None则不筛选类型。
         status: 工单状态，可选值：待处理/处理中/已解决/已关闭。为None则不筛选状态。
         date_range: 日期范围，可选格式：
             - "today" — 当天
@@ -33,11 +34,14 @@ def query_tickets(
             - "month" — 近30天
             - "YYYY-MM-DD,YYYY-MM-DD" — 自定义范围
             为None则不限日期。
+        priority: 优先级筛选，可选值：紧急/高/中/低。支持多值逗号分隔，如"紧急,高"同时匹配紧急和高优先。为None则不筛选。
 
     Returns:
         匹配条件的工单列表，每条工单为包含完整字段的字典。
     """
-    return query_tickets_db(ticket_type=ticket_type, status=status, date_range=date_range)
+    return query_tickets_db(
+        ticket_type=ticket_type, status=status, date_range=date_range, priority=priority,
+    )
 
 
 def analyze_tickets(analysis_type: str) -> dict[str, Any]:
@@ -293,18 +297,20 @@ def execute_sql(sql: str) -> dict[str, Any]:
 
 
 def execute_python(code: str) -> dict[str, Any]:
-    """在受限沙箱中执行 Python 代码片段（用于数据分析和可视化）。
+    """【仅限画图】用 plotly (推荐) 或 matplotlib 生成图表。严禁做数据分析。
 
-    可用预导入模块: json, datetime, math, statistics, collections, itertools, matplotlib.pyplot(plt), numpy(np)
-    内置 print() 输出将被捕获到 stdout。
-    使用 plt.savefig() 保存的图表会自动转为 base64 返回，供前端展示。
+    ⚠️ 必须先调其他工具拿到真实数据，再用本工具画图。严禁硬编码假数据。
+    ⚠️ 推荐 Plotly：中文原生支持，交互式，无需字体配置。
+
+    预导入: plotly.graph_objects(go), plotly.express(px), matplotlib.pyplot(plt), numpy(np)
+    Plotly Figure 自动序列化为 JSON 供前端渲染。
+    print() 输出被捕获。
 
     Args:
-        code: Python 代码，必填。最后一行若为表达式则自动求值。
-
+        code: Python 代码，最后一行返回 plotly Figure 即可。
     Returns:
-        {"stdout": str, "result": any, "error": str | None, "chart_images": [str]}
-    """
+        {"stdout": str, "error": str|None, "plotly_charts": [dict], "chart_images": [str(png base64)]}"""
+
     import sys
     import io
     import json as _json
@@ -314,6 +320,7 @@ def execute_python(code: str) -> dict[str, Any]:
     import itertools
     import base64
     from datetime import datetime, timedelta
+    import ast
 
     safe_locals = {
         "json": _json, "math": math, "statistics": statistics,
@@ -321,18 +328,30 @@ def execute_python(code: str) -> dict[str, Any]:
         "datetime": datetime, "timedelta": timedelta,
         "data": None,
     }
-    # 注入 matplotlib + numpy（如果已安装）
+
+    # ── Plotly ──────────────────────────────────────────────────
+    try:
+        import plotly.graph_objects as _go
+        import plotly.express as _px
+        safe_locals["go"] = _go
+        safe_locals["px"] = _px
+    except ImportError:
+        _go = None
+        _px = None
+
+    # ── Matplotlib ──────────────────────────────────────────────
     plt = None
     _sandbox_tmpdir = None
     try:
         import matplotlib
         matplotlib.use('Agg')
+        matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+        matplotlib.rcParams['axes.unicode_minus'] = False
+        import matplotlib.font_manager as _fm
+        _fm._load_fontmanager(try_read_cache=False)
         import matplotlib.pyplot as _plt
         import numpy as np
-        _plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
-        _plt.rcParams['axes.unicode_minus'] = False
 
-        # 将 savefig 重定向到临时目录，避免污染项目根目录
         import tempfile as _tempfile
         import os as _os
         _sandbox_tmpdir = _tempfile.mkdtemp(prefix="sandbox_")
@@ -356,24 +375,20 @@ def execute_python(code: str) -> dict[str, Any]:
     old_stdout = sys.stdout
     sys.stdout = buf
 
-    # 清空当前已有 figures，避免上次执行残留
     if plt is not None:
         plt.close('all')
 
     try:
-        import ast
         tree = ast.parse(code.strip())
         if not tree.body:
-            return {"stdout": "", "result": None, "error": "空代码", "chart_images": []}
+            return {"stdout": "", "error": "空代码", "plotly_charts": [], "chart_images": []}
 
         *body_stmts, last_stmt = tree.body
 
-        # 先执行前面的语句
         if body_stmts:
             prefix_code = "\n".join(ast.unparse(stmt) for stmt in body_stmts)
             exec(compile(prefix_code, "<sandbox>", "exec"), {"__builtins__": __builtins__}, safe_locals)
 
-        # 如果是 expression，eval 求值；否则 exec
         if isinstance(last_stmt, ast.Expr):
             result = eval(
                 compile(ast.Expression(body=last_stmt.value), "<sandbox>", "eval"),
@@ -382,56 +397,34 @@ def execute_python(code: str) -> dict[str, Any]:
             )
         else:
             stmt_code = ast.unparse(last_stmt)
-            result = exec(compile(stmt_code, "<sandbox>", "exec"), {"__builtins__": __builtins__}, safe_locals)
+            exec(compile(stmt_code, "<sandbox>", "exec"), {"__builtins__": __builtins__}, safe_locals)
+            result = None
 
-        # 捕获剩余未关闭的图表
-        chart_images = []
-        if plt is not None:
-            # 找到可用的中文字体
-            import matplotlib.font_manager as fm
-            cn_font_path = None
-            for name in ['SimHei', 'STXihei', 'PingFang SC', 'Microsoft YaHei']:
+        # ── 收集 Plotly Figures ──────────────────────────────────
+        plotly_charts = []
+        if _go is not None:
+            figures = []
+            # 1) 返回值是 Figure
+            if result is not None and isinstance(result, _go.Figure):
+                figures.append(result)
+            # 2) locals 中的 Figure（含 fig.show() 创建的）
+            for name, val in safe_locals.items():
+                if (isinstance(val, _go.Figure)
+                        and val is not result
+                        and name not in ("go", "px")):
+                    figures.append(val)
+            for fig in figures:
                 try:
-                    fp = fm.findfont(name, fallback_to_default=False)
-                    if fp and name.lower() in fp.lower():
-                        cn_font_path = fp
-                        break
-                except Exception:
-                    continue
-            # 创建中文字体属性
-            cn_font_prop = None
-            if cn_font_path:
-                try:
-                    cn_font_prop = fm.FontProperties(fname=cn_font_path)
+                    plotly_charts.append(_json.loads(fig.to_json()))
                 except Exception:
                     pass
 
+        # ── 收集 Matplotlib Figures ──────────────────────────────
+        chart_images = []
+        if plt is not None:
             for fig_num in plt.get_fignums():
                 try:
                     fig = plt.figure(fig_num)
-                    # 遍历所有文本元素并强制设置中文字体
-                    if cn_font_prop:
-                        for ax in fig.get_axes():
-                            if ax.title:
-                                ax.title.set_fontproperties(cn_font_prop)
-                            if ax.xaxis.label:
-                                ax.xaxis.label.set_fontproperties(cn_font_prop)
-                            if ax.yaxis.label:
-                                ax.yaxis.label.set_fontproperties(cn_font_prop)
-                            for label in ax.get_xticklabels():
-                                label.set_fontproperties(cn_font_prop)
-                            for label in ax.get_yticklabels():
-                                label.set_fontproperties(cn_font_prop)
-                            legend = ax.get_legend()
-                            if legend:
-                                for text in legend.get_texts():
-                                    text.set_fontproperties(cn_font_prop)
-                        # 也处理 suptitle 和 figure 级别的 text
-                        if fig._suptitle:
-                            fig._suptitle.set_fontproperties(cn_font_prop)
-                        for txt in fig.texts:
-                            txt.set_fontproperties(cn_font_prop)
-
                     img_buf = io.BytesIO()
                     fig.savefig(img_buf, format='png', dpi=100, bbox_inches='tight')
                     img_buf.seek(0)
@@ -440,9 +433,9 @@ def execute_python(code: str) -> dict[str, Any]:
                 except Exception:
                     pass
 
-        # 序列化 result（处理 matplotlib object 等不可 JSON 序列化的类型）
+        # 序列化 result
         result_json = None
-        if result is not None:
+        if result is not None and not isinstance(result, _go.Figure if _go else object):
             try:
                 result_json = _json.dumps(result, ensure_ascii=False)
             except (TypeError, ValueError):
@@ -452,6 +445,7 @@ def execute_python(code: str) -> dict[str, Any]:
             "stdout": buf.getvalue(),
             "result": result_json,
             "error": None,
+            "plotly_charts": plotly_charts,
             "chart_images": chart_images,
         }
     except Exception as e:
@@ -459,6 +453,7 @@ def execute_python(code: str) -> dict[str, Any]:
             "stdout": buf.getvalue(),
             "result": None,
             "error": f"{type(e).__name__}: {str(e)}",
+            "plotly_charts": [],
             "chart_images": [],
         }
     finally:

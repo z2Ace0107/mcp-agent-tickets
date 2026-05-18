@@ -176,6 +176,11 @@ def init_db(db_path: str | None = None) -> None:
             pass  # 列已存在
         conn.commit()
 
+        # v4.0: FTS5 全文索引（RAG 双通道检索的关键词通道）
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS tickets_fts USING fts5(title, description, solution)"
+        )
+
         # v3.3: 先种子领域表（tickets FK 依赖它们）
         _seed_equipment(conn)
         _seed_production_lines(conn)
@@ -720,8 +725,13 @@ def query_tickets_db(
     ticket_type: str | None = None,
     status: str | None = None,
     date_range: str | None = None,
+    priority: str | None = None,
 ) -> list[dict[str, Any]]:
-    """按条件筛选工单列表。"""
+    """按条件筛选工单列表。
+
+    Args:
+        priority: 优先级筛选，支持单值"紧急"或多值"紧急,高"（逗号分隔）。为None则不筛选。
+    """
     conn = get_connection()
     try:
         query = "SELECT * FROM tickets WHERE 1=1"
@@ -733,6 +743,15 @@ def query_tickets_db(
         if status:
             query += " AND status = ?"
             params.append(status)
+        if priority:
+            priorities = [p.strip() for p in priority.split(",") if p.strip()]
+            if len(priorities) == 1:
+                query += " AND priority = ?"
+                params.append(priorities[0])
+            elif len(priorities) > 1:
+                placeholders = ",".join("?" * len(priorities))
+                query += f" AND priority IN ({placeholders})"
+                params.extend(priorities)
 
         rows = conn.execute(query, params).fetchall()
         result = [dict(r) for r in rows]

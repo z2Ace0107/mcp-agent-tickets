@@ -44,13 +44,14 @@ server = Server("mcp-ticket-agent")
 TOOL_DEFINITIONS = [
     Tool(
         name="query_tickets",
-        description="按条件筛选工单列表。ticket_type: 设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测; status: 待处理/处理中/已解决/已关闭; date_range: today/week/month/YYYY-MM-DD,YYYY-MM-DD。返回含设备/产线/物料FK引用的完整工单。",
+        description="按条件筛选工单列表。ticket_type: 设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测; status: 待处理/处理中/已解决/已关闭; priority: 紧急/高/中/低(支持逗号分隔如"紧急,高"); date_range: today/week/month/YYYY-MM-DD,YYYY-MM-DD。返回含设备/产线/物料FK引用的完整工单。",
         inputSchema={
             "type": "object",
             "properties": {
                 "ticket_type": {"type": "string", "description": "工单类型：设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测"},
                 "status": {"type": "string", "description": "工单状态：待处理/处理中/已解决/已关闭"},
                 "date_range": {"type": "string", "description": "日期范围：today/week/month/YYYY-MM-DD,YYYY-MM-DD"},
+                "priority": {"type": "string", "description": "优先级：紧急/高/中/低，支持逗号分隔如"紧急,高""},
             },
         },
     ),

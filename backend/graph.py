@@ -44,9 +44,10 @@ def query_tickets_tool(
     ticket_type: str | None = None,
     status: str | None = None,
     date_range: str | None = None,
+    priority: str | None = None,
 ) -> str:
-    """按条件筛选工单列表。参数均为可选。ticket_type: 设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测; status: 待处理/处理中/已解决/已关闭; date_range: today/week/month/YYYY-MM-DD,YYYY-MM-DD。"""
-    result = query_tickets(ticket_type=ticket_type, status=status, date_range=date_range)
+    """按条件筛选工单列表。参数均为可选。ticket_type: 设备故障/质量异常/安全隐患/物料短缺/工艺问题/生产计划/环境监测; status: 待处理/处理中/已解决/已关闭; date_range: today/week/month/YYYY-MM-DD,YYYY-MM-DD; priority: 紧急/高/中/低，支持逗号分隔如"紧急,高"。"""
+    result = query_tickets(ticket_type=ticket_type, status=status, date_range=date_range, priority=priority)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @tool
@@ -111,7 +112,7 @@ def execute_sql_tool(sql: str) -> str:
 
 @tool
 def execute_python_tool(code: str) -> str:
-    """在受限沙箱中执行Python代码做数据分析或可视化。plt和np已预导入，中文字体(SimHei)已配好，禁止重复设置plt.rcParams/font。可用模块：json/datetime/math/statistics/collections/itertools。code: Python代码，必填。print()输出被捕获到stdout。"""
+    """【仅限画图】用 Plotly(推荐)或 matplotlib 生成图表。Plotly 中文原生支持无乱码。go/px/plt/np 已预导入。最后一行返回 Figure 即可。严禁硬编码数据——数据必须来自其他工具的真实返回结果。"""
     result = execute_python(code=code)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -144,6 +145,7 @@ QUERY_TOOLS = [
 ]
 
 ANALYZE_TOOLS = [
+    query_tickets_tool,  # v4.0 P1: 分析场景常需按日期/类型/优先级过滤
     analyze_tickets_tool,
     execute_python_tool,
     recommend_tickets_tool,
@@ -155,9 +157,7 @@ KNOWLEDGE_TOOLS = [
     get_ticket_detail_tool,
 ]
 
-REPORTER_TOOLS = [
-    execute_python_tool,
-]
+REPORTER_TOOLS: list = []  # v4.0 P1: Reporter 只管格式化，不执行 Python
 
 # ============================================================
 # 状态定义
@@ -277,13 +277,18 @@ def tool_executor_node(state: AgentState) -> dict:
             "degraded": meta["degraded"],
             "retries": meta["retries"],
         }
-        # 提取 execute_python 生成的图表 base64 数据，供前端渲染
+        # 提取 execute_python 生成的图表数据，供前端渲染
         if tool_name == "execute_python_tool":
             try:
                 obs_data = json.loads(observation)
+                # matplotlib PNG 图表
                 charts = obs_data.get("chart_images", [])
                 if charts:
                     step_data["chart_images"] = charts
+                # plotly JSON 图表
+                plotly_charts = obs_data.get("plotly_charts", [])
+                if plotly_charts:
+                    step_data["plotly_charts"] = plotly_charts
             except (json.JSONDecodeError, KeyError):
                 pass
         steps.append(step_data)
