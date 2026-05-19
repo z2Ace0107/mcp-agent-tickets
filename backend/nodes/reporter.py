@@ -30,8 +30,7 @@ def reporter_node(state: dict) -> dict:
     """Reporter: 汇总对话历史 + 格式化最终回复。不绑定任何工具。"""
 
     llm = _create_llm()
-    # Reporter 永不绑工具，避免 LLM 模仿历史消息里的 tool_calls
-    llm = llm.bind_tools([], tool_choice="none")
+    # Reporter 不绑任何工具，直接格式化回复
 
     messages = state.get("messages", [])
     user_input = state.get("rewritten_query", state["user_input"])

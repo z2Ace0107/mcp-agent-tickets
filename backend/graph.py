@@ -405,12 +405,18 @@ def build_graph() -> StateGraph:
 # ============================================================
 
 def extract_final_output(messages: list) -> str:
-    """从消息列表中提取最终 AI 回复。"""
+    """从消息列表中提取最终 AI 回复。跳过含 <function_calls> 的消息。"""
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and not msg.tool_calls:
-            content = msg.content
-            if content:
-                return content
+            content = msg.content or ""
+            if content.strip() and "<function_calls>" not in content:
+                return content.strip()
+    # 回退：取任意非空消息
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and not msg.tool_calls:
+            content = msg.content or ""
+            if content.strip():
+                return content.strip()
     return "无法生成回复，请重试。"
 
 
