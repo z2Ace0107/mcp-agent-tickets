@@ -35,6 +35,18 @@ from backend.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def strip_reasoning_content(messages: list) -> list:
+    """移除消息中 DeepSeek thinking 产生的 reasoning_content。
+    每个节点独立调用 API 时，不能携带前序节点的 reasoning_content，
+    否则 DeepSeek 要求原样交还，导致 400 错误。
+    """
+    for m in messages:
+        if hasattr(m, "additional_kwargs") and m.additional_kwargs:
+            m.additional_kwargs.pop("reasoning_content", None)
+    return messages
+
+
 # ============================================================
 # 12 个 LangChain 工具 — 全部注册到 function calling
 # ============================================================
@@ -514,15 +526,24 @@ async def run_graph_stream(
         elif mode == "messages":
             message, metadata = data
             node_name = metadata.get("langgraph_node", "")
-            # 仅 reporter 节点的纯文本 token 流式输出
-            if (
-                node_name == "reporter"
-                and isinstance(message, AIMessageChunk)
-                and message.content
-                and not getattr(message, "tool_calls", None)
-                and not getattr(message, "tool_call_chunks", None)
-            ):
-                yield {"type": "token", "content": message.content, "node": node_name}
+            if isinstance(message, AIMessageChunk):
+                # 流式 thinking token（所有 Agent 节点，非 Reporter 的思考过程）
+                reasoning = getattr(message, "additional_kwargs", {}) or {}
+                reasoning_content = reasoning.get("reasoning_content")
+                if reasoning_content and node_name != "reporter":
+                    yield {
+                        "type": "thinking",
+                        "content": reasoning_content,
+                        "node": node_name,
+                    }
+                # 流式输出 token（仅 Reporter 的正文内容）
+                if (
+                    node_name == "reporter"
+                    and message.content
+                    and not getattr(message, "tool_calls", None)
+                    and not getattr(message, "tool_call_chunks", None)
+                ):
+                    yield {"type": "token", "content": message.content, "node": node_name}
 
     output = extract_final_output(final_state.get("messages", []))
     steps = final_state.get("intermediate_steps", [])

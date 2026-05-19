@@ -559,9 +559,7 @@ def render_reAct_steps(msg: dict):
             elif obs:
                 st.code(obs, language="json")
 
-            # 图表渲染（execute_python 生成）
-            _render_python_charts(step)
-
+            # 图表不在步骤展开中渲染（避免双次渲染闪跳），统一在回复下方展示
             if si < len(steps):
                 st.divider()
 
@@ -577,16 +575,18 @@ def _render_python_charts(step: dict) -> None:
     for chart_dict in plotly_charts:
         try:
             fig = _go.Figure(chart_dict)
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                margin=dict(l=10, r=10, t=40, b=10),
+                template="plotly_white",
+            )
+            st.plotly_chart(fig, use_container_width=True, theme=None)
         except Exception:
             pass
 
     # matplotlib PNG 兜底
     if chart_images:
         for img_b64 in chart_images:
-            l, c, r = st.columns([1.5, 7, 1.5])
-            with c:
-                st.image(_b64.b64decode(img_b64), use_container_width=True)
+            st.image(_b64.b64decode(img_b64), use_container_width=True)
 
 
 def render_charts_from_steps(steps: list):
@@ -1097,6 +1097,15 @@ def _create_stream(user_input: str, chat_history_raw: list):
     metadata: dict = {}
     _error: list[Exception] = []
 
+    NODE_LABEL = {
+        "supervisor": "分析意图...",
+        "query_agent": "Query Agent 查询中...",
+        "analyze_agent": "Analyze Agent 分析中...",
+        "knowledge_agent": "Knowledge Agent 检索中...",
+        "tool_executor": "执行工具...",
+        "reporter": "生成报告...",
+    }
+
     async def _stream():
         try:
             async for event in run_agent_stream(user_input, chat_history):
@@ -1112,18 +1121,40 @@ def _create_stream(user_input: str, chat_history_raw: list):
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
+    thinking_nodes: dict[str, str] = {}  # node → full thinking text
+    thinking_node_order: list[str] = []
+
     def text_gen():
+        nonlocal thinking_nodes, thinking_node_order
         has_tokens = False
+        current_thinking = ""
         while True:
             kind, value = result_queue.get()
             if kind == "error":
                 raise _error[0] if _error else RuntimeError("Stream error")
             if kind == "done":
+                if current_thinking:
+                    thinking_nodes[current_thinking] = thinking_nodes.get(current_thinking, "")
+                metadata["thinking"] = thinking_nodes
+                metadata["thinking_order"] = thinking_node_order
                 break
             if kind == "event":
-                if value["type"] == "progress":
+                if value["type"] == "thinking":
+                    node = value.get("node", "")
+                    if node and node not in thinking_node_order:
+                        thinking_node_order.append(node)
+                        current_thinking = node
+                        yield f"\n\n💭 *{NODE_LABEL.get(node, node)} 推理中...*\n\n"
+                    thinking_nodes[node] = thinking_nodes.get(node, "") + value["content"]
+                elif value["type"] == "progress":
+                    if current_thinking:
+                        thinking_nodes[current_thinking] = thinking_nodes.get(current_thinking, "")
+                        current_thinking = ""
                     yield f"> {value['label']}\n\n"
                 elif value["type"] == "token":
+                    if current_thinking:
+                        thinking_nodes[current_thinking] = thinking_nodes.get(current_thinking, "")
+                        current_thinking = ""
                     has_tokens = True
                     yield value["content"]
                 elif value["type"] == "done":
@@ -1171,6 +1202,21 @@ if prompt:
 
             with st.chat_message("assistant"):
                 st.write_stream(text_stream)
+
+                # 渲染可折叠 thinking 区域
+                thinking = metadata.get("thinking", {})
+                thinking_order = metadata.get("thinking_order", [])
+                NODE_CN = {
+                    "supervisor": "路由分析", "query_agent": "Query Agent",
+                    "analyze_agent": "Analyze Agent", "knowledge_agent": "Knowledge Agent",
+                    "reporter": "Reporter",
+                }
+                for node in thinking_order:
+                    text = thinking.get(node, "")
+                    if text.strip():
+                        label = NODE_CN.get(node, node)
+                        with st.expander(f"🧠 {label} 推理过程", expanded=False):
+                            st.markdown(text)
 
             response_text = metadata.get("output", "")
             steps = metadata.get("steps", [])

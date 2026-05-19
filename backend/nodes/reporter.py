@@ -46,6 +46,8 @@ def reporter_node(state: dict) -> dict:
         system = SystemMessage(content=REPORTER_PROMPT.format(current_date=current_date))
         messages = [system, HumanMessage(content=user_input)]
 
+    from backend.graph import strip_reasoning_content
+    strip_reasoning_content(messages)
     logger.info("[reporter] 生成回复..." + (" (含工具)" if agent_iterations < MAX_AGENT_ITERATIONS - 1 else " (终轮无工具)"))
     response = llm.invoke(messages)
     return {"messages": [response], "active_agent": "reporter"}

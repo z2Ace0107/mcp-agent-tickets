@@ -331,6 +331,8 @@ def execute_python(code: str) -> dict[str, Any]:
 
     # ── Plotly ──────────────────────────────────────────────────
     try:
+        import plotly.io as _pio
+        _pio.renderers.default = "json"  # 禁浏览器渲染，避免 fig.show() 弹窗
         import plotly.graph_objects as _go
         import plotly.express as _px
         safe_locals["go"] = _go

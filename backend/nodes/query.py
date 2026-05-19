@@ -41,6 +41,8 @@ def query_node(state: dict) -> dict:
             HumanMessage(content=rewritten),
         ]
 
+    from backend.graph import strip_reasoning_content
+    strip_reasoning_content(messages)
     logger.info("[query] 调用 LLM...")
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
