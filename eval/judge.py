@@ -34,7 +34,7 @@ from backend.config import get_settings
 
 AGENT_MAP = {
     "query": "query_agent", "analyze": "analyze_agent",
-    "knowledge": "knowledge_agent", "chat": "reporter",
+    "knowledge": "knowledge_agent", "chat": "END",
 }
 
 

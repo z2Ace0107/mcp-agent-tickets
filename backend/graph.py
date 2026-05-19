@@ -169,7 +169,7 @@ KNOWLEDGE_TOOLS = [
     get_ticket_detail_tool,
 ]
 
-REPORTER_TOOLS: list = []  # v4.0 P1: Reporter 只管格式化，不执行 Python
+# v5.0: Reporter 节点已移除，Agent 最后回复直接作为最终输出
 
 # ============================================================
 # 状态定义
@@ -318,25 +318,15 @@ def tool_executor_node(state: AgentState) -> dict:
 # ============================================================
 
 def route_supervisor(state: AgentState) -> str:
-    """After supervisor classification, route to target agent."""
-    return state.get("route", "reporter")
+    """After supervisor classification, route to target agent or END for chat."""
+    route = state.get("route", "")
+    if route in ("query_agent", "analyze_agent", "knowledge_agent"):
+        return route
+    return "END"  # chat → 直接结束，supervisor 已生成回复
 
 
 def route_agent(state: AgentState) -> str:
-    """After an agent node runs: more tools or reporter?"""
-    if state.get("agent_iterations", 0) >= MAX_AGENT_ITERATIONS:
-        return "reporter"
-    messages = state.get("messages", [])
-    if not messages:
-        return "reporter"
-    last_msg = messages[-1]
-    if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
-        return "tool_executor"
-    return "reporter"
-
-
-def route_reporter(state: AgentState) -> str:
-    """After reporter: if has tool_calls → tool_executor, else END."""
+    """After an agent node runs: more tools or END?"""
     if state.get("agent_iterations", 0) >= MAX_AGENT_ITERATIONS:
         return "END"
     messages = state.get("messages", [])
@@ -349,10 +339,10 @@ def route_reporter(state: AgentState) -> str:
 
 
 def route_after_tools(state: AgentState) -> str:
-    """After tool execution: back to agent or to reporter."""
+    """After tool execution: back to agent or END."""
     if state.get("agent_iterations", 0) >= MAX_AGENT_ITERATIONS:
-        return "reporter"
-    return state.get("active_agent", "reporter")
+        return "END"
+    return state.get("active_agent", "END")
 
 
 # ============================================================
@@ -360,8 +350,10 @@ def route_after_tools(state: AgentState) -> str:
 # ============================================================
 
 def build_graph() -> StateGraph:
-    """v3.3 5-Agent StateGraph: Supervisor → {Query|Analyze|Knowledge} → Reporter。"""
-    from backend.nodes import supervisor_node, query_node, analyze_node, knowledge_node, reporter_node
+    """v5.0 4-Agent StateGraph: Supervisor → {Query|Analyze|Knowledge} → END。
+    Reporter 节点已移除，Agent 最后回复直接作为最终输出。
+    """
+    from backend.nodes import supervisor_node, query_node, analyze_node, knowledge_node
 
     workflow = StateGraph(AgentState)
 
@@ -370,31 +362,25 @@ def build_graph() -> StateGraph:
     workflow.add_node("analyze_agent", analyze_node)
     workflow.add_node("knowledge_agent", knowledge_node)
     workflow.add_node("tool_executor", tool_executor_node)
-    workflow.add_node("reporter", reporter_node)
 
     workflow.set_entry_point("supervisor")
 
     workflow.add_conditional_edges(
         "supervisor", route_supervisor,
         {"query_agent": "query_agent", "analyze_agent": "analyze_agent",
-         "knowledge_agent": "knowledge_agent", "reporter": "reporter"},
+         "knowledge_agent": "knowledge_agent", "END": END},
     )
 
     for agent in ["query_agent", "analyze_agent", "knowledge_agent"]:
         workflow.add_conditional_edges(
             agent, route_agent,
-            {"tool_executor": "tool_executor", "reporter": "reporter"},
+            {"tool_executor": "tool_executor", "END": END},
         )
 
     workflow.add_conditional_edges(
         "tool_executor", route_after_tools,
         {"query_agent": "query_agent", "analyze_agent": "analyze_agent",
-         "knowledge_agent": "knowledge_agent", "reporter": "reporter"},
-    )
-
-    workflow.add_conditional_edges(
-        "reporter", route_reporter,
-        {"tool_executor": "tool_executor", "END": END},
+         "knowledge_agent": "knowledge_agent", "END": END},
     )
 
     return workflow.compile()
@@ -467,11 +453,7 @@ async def run_graph_stream(
     user_input: str,
     chat_history: list[dict[str, str]] | None = None,
 ):
-    """v4.0: 流式运行 LangGraph 图，yield 节点进度 + token + 最终结果。
-
-    stream_mode=["updates", "messages"] — updates 给进度，messages 给逐字 token。
-    仅 reporter 节点的 token 会流式输出到前端。
-    """
+    """v5.0: 流式运行 LangGraph 图。Agent 最后回复即最终输出，无 Reporter 节点。"""
     logger.info(f"[graph:stream] 开始: '{user_input[:60]}...'")
     graph = build_graph()
 
@@ -494,7 +476,6 @@ async def run_graph_stream(
         "analyze_agent": "Analyze Agent 分析中...",
         "knowledge_agent": "Knowledge Agent 检索中...",
         "tool_executor": "执行工具...",
-        "reporter": "生成报告...",
     }
 
     start_time = time.time()
@@ -533,19 +514,18 @@ async def run_graph_stream(
             message, metadata = data
             node_name = metadata.get("langgraph_node", "")
             if isinstance(message, AIMessageChunk):
-                # 流式 thinking token（所有 Agent 节点，非 Reporter 的思考过程）
+                # 流式 thinking token（所有节点，thinking disabled 时无输出）
                 reasoning = getattr(message, "additional_kwargs", {}) or {}
                 reasoning_content = reasoning.get("reasoning_content")
-                if reasoning_content and node_name != "reporter":
+                if reasoning_content:
                     yield {
                         "type": "thinking",
                         "content": reasoning_content,
                         "node": node_name,
                     }
-                # 流式输出 token（仅 Reporter 的正文内容）
+                # 流式输出 token（Agent 节点的正文内容，不含工具调用）
                 if (
-                    node_name == "reporter"
-                    and message.content
+                    message.content
                     and not getattr(message, "tool_calls", None)
                     and not getattr(message, "tool_call_chunks", None)
                 ):

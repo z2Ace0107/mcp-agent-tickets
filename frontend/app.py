@@ -26,7 +26,7 @@ ROUTE_LABELS = {
     "query_agent":     ("🔍", "Query 查询", "#4ADE80"),
     "analyze_agent":   ("📊", "Analyze 分析", "#C084FC"),
     "knowledge_agent": ("📚", "Knowledge 检索", "#F59E0B"),
-    "reporter":        ("💬", "Reporter 生成", "#93C5FD"),
+    "END":             ("💬", "直接回复", "#93C5FD"),
 }
 INTENT_LABELS = {
     "query": "查询工单", "analyze": "统计分析",
@@ -1104,7 +1104,6 @@ def _create_stream(user_input: str, chat_history_raw: list):
         "analyze_agent": "Analyze Agent 分析中...",
         "knowledge_agent": "Knowledge Agent 检索中...",
         "tool_executor": "执行工具...",
-        "reporter": "生成报告...",
     }
 
     async def _stream():
@@ -1210,7 +1209,6 @@ if prompt:
                 NODE_CN = {
                     "supervisor": "路由分析", "query_agent": "Query Agent",
                     "analyze_agent": "Analyze Agent", "knowledge_agent": "Knowledge Agent",
-                    "reporter": "Reporter",
                 }
                 for node in thinking_order:
                     text = thinking.get(node, "")
