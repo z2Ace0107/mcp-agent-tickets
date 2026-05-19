@@ -40,14 +40,16 @@ def reporter_node(state: dict) -> dict:
 
     messages = state.get("messages", [])
     user_input = state.get("rewritten_query", state["user_input"])
-
+    current_date = datetime.now().strftime("%Y年%m月%d日")
+    system = SystemMessage(content=REPORTER_PROMPT.format(current_date=current_date))
+    # Reporter 永远在调用链末端，无论 messages 是否为空都要注入 system prompt
     if not messages:
-        current_date = datetime.now().strftime("%Y年%m月%d日")
-        system = SystemMessage(content=REPORTER_PROMPT.format(current_date=current_date))
         messages = [system, HumanMessage(content=user_input)]
+    else:
+        messages = [system] + list(messages)
 
     from backend.graph import strip_reasoning_content
     strip_reasoning_content(messages)
-    logger.info("[reporter] 生成回复..." + (" (含工具)" if agent_iterations < MAX_AGENT_ITERATIONS - 1 else " (终轮无工具)"))
+    logger.info("[reporter] 生成回复...")
     response = llm.invoke(messages)
     return {"messages": [response], "active_agent": "reporter"}
