@@ -42,15 +42,50 @@ def _create_llm(temperature: float = 0):
     )
 
 
-def _chat_reply(intent: str, rewritten: str, user_input: str) -> dict:
-    """chat 意图——生成直接回复，不调用业务 Agent。"""
-    return {
-        "intent": "chat",
-        "rewritten_query": rewritten,
-        "route": "END",
-        "active_agent": "",
-        "messages": [AIMessage(content=CHAT_REPLY)],
-    }
+def _chat_reply(intent: str, rewritten: str, user_input: str,
+                chat_history=None) -> dict:
+    """chat 意图——快捷问候用静态文案，LLM 分类的 chat 用模型生成回复。"""
+    # 快捷拦截（纯问候）→ 静态回复
+    stripped = user_input.strip().lower()
+    if any(stripped.startswith(kw) or stripped == kw for kw in CHAT_KEYWORDS):
+        return {
+            "intent": "chat", "rewritten_query": rewritten,
+            "route": "END", "active_agent": "",
+            "messages": [AIMessage(content=CHAT_REPLY)],
+        }
+    # LLM 分类为 chat → 用模型生成上下文相关回复
+    try:
+        llm = _create_llm(temperature=0)
+        history_summary = ""
+        if chat_history:
+            recent = chat_history[-3:]
+            history_summary = "\n".join(
+                f"[{m.get('role','?')}]: {str(m.get('content',''))[:300]}"
+                for m in recent
+            )
+        prompt = (
+            f"对话历史:\n{history_summary}\n\n"
+            f"用户刚才说: {user_input}\n\n"
+            f"你是智能工单助手。如果用户的话像是追问或简短指令（如\"画图\"\"展开\"\"详细点\"），"
+            f"请结合对话历史理解其意图，友好地让用户再描述清楚。"
+            f"回复用中文，3句话以内。"
+        ) if history_summary else (
+            f"用户说: {user_input}\n\n"
+            f"你是智能工单助手。如果不确定用户意图，友好地引导用户描述具体需求。"
+            f"回复用中文，3句话以内。"
+        )
+        response = llm.invoke([HumanMessage(content=prompt)])
+        return {
+            "intent": "chat", "rewritten_query": rewritten,
+            "route": "END", "active_agent": "",
+            "messages": [AIMessage(content=response.content.strip())],
+        }
+    except Exception:
+        return {
+            "intent": "chat", "rewritten_query": rewritten,
+            "route": "END", "active_agent": "",
+            "messages": [AIMessage(content=CHAT_REPLY)],
+        }
 
 
 def supervisor_node(state: dict) -> dict:
@@ -61,7 +96,7 @@ def supervisor_node(state: dict) -> dict:
     # 快捷拦截：纯问候/闲聊直接返回
     stripped = user_input.strip().lower()
     if any(stripped.startswith(kw) or stripped == kw for kw in CHAT_KEYWORDS):
-        return _chat_reply("chat", user_input, user_input)
+        return _chat_reply("chat", user_input, user_input, chat_history)
 
     history_text = "无"
     if chat_history:
@@ -93,7 +128,7 @@ def supervisor_node(state: dict) -> dict:
             intent = "chat"
 
         if intent == "chat":
-            return _chat_reply(intent, rewritten, user_input)
+            return _chat_reply(intent, rewritten, user_input, chat_history)
 
         route_map = {
             "query": "query_agent",
@@ -105,7 +140,7 @@ def supervisor_node(state: dict) -> dict:
         logger.info(f"[supervisor] intent={intent} → {route}, q='{rewritten[:60]}...'")
     except Exception as e:
         logger.warning(f"[supervisor] 分类失败: {e}")
-        return _chat_reply("chat", user_input, user_input)
+        return _chat_reply("chat", user_input, user_input, chat_history)
 
     return {
         "intent": intent,

@@ -406,6 +406,23 @@ def extract_final_output(messages: list) -> str:
     return "无法生成回复，请重试。"
 
 
+def _build_initial_messages(chat_history: list[dict[str, str]] | None) -> list:
+    """将对话历史转为 LangChain 消息列表，供 Agent 理解上下文。"""
+    from langchain_core.messages import AIMessage, HumanMessage
+    msgs = []
+    if chat_history:
+        for m in chat_history[-6:]:  # 最近 3 轮
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                msgs.append(HumanMessage(content=content))
+            elif role == "assistant":
+                msgs.append(AIMessage(content=content))
+    return msgs
+
+
 async def run_graph(
     user_input: str,
     chat_history: list[dict[str, str]] | None = None,
@@ -415,7 +432,7 @@ async def run_graph(
     graph = build_graph()
 
     initial_state = {
-        "messages": [],
+        "messages": _build_initial_messages(chat_history),
         "user_input": user_input,
         "chat_history": chat_history,
         "intent": "",
@@ -458,7 +475,7 @@ async def run_graph_stream(
     graph = build_graph()
 
     initial_state = {
-        "messages": [],
+        "messages": _build_initial_messages(chat_history),
         "user_input": user_input,
         "chat_history": chat_history,
         "intent": "",
