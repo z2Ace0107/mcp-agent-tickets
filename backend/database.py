@@ -89,42 +89,6 @@ def init_db(db_path: str | None = None) -> None:
                 description TEXT DEFAULT ''
             );
 
-            CREATE TABLE IF NOT EXISTS agent_actions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                action_type TEXT NOT NULL,
-                action_name TEXT NOT NULL,
-                input_params TEXT DEFAULT '{}',
-                output_summary TEXT DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'success',
-                error_message TEXT DEFAULT '',
-                elapsed_ms REAL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                conversation_id INTEGER,
-                FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS sql_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
-                sql_text TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                category TEXT DEFAULT '通用',
-                is_safe INTEGER NOT NULL DEFAULT 1,
-                use_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS correction_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                error_pattern TEXT NOT NULL,
-                rule_description TEXT NOT NULL,
-                fix_template TEXT DEFAULT '',
-                confidence REAL NOT NULL DEFAULT 0.5,
-                source_action_id INTEGER,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (source_action_id) REFERENCES agent_actions(id)
-            );
-
             -- v3.3 星型 Schema：4 张领域表
             CREATE TABLE IF NOT EXISTS equipment (
                 equipment_id TEXT PRIMARY KEY,
@@ -193,9 +157,7 @@ def init_db(db_path: str | None = None) -> None:
 
         # Agent 系统表种子数据
         _seed_db_schema_info(conn)
-        _seed_sql_templates(conn)
-        _seed_correction_rules(conn)
-        logger.info("v3.3 领域表 + Agent 系统表种子数据就绪")
+        logger.info("v3.3 领域表种子数据就绪")
     finally:
         conn.close()
 
@@ -618,31 +580,7 @@ def _seed_db_schema_info(conn: sqlite3.Connection) -> None:
         ("conversation_messages", "content", "TEXT", 0, 0, "消息内容"),
         ("conversation_messages", "steps", "TEXT", 1, 0, "推理步骤 JSON"),
         ("conversation_messages", "created_at", "TEXT", 0, 0, "消息时间"),
-        ("agent_actions", "id", "INTEGER", 0, 1, "主键自增ID"),
-        ("agent_actions", "action_type", "TEXT", 0, 0, "操作类型：sql/python/tool"),
-        ("agent_actions", "action_name", "TEXT", 0, 0, "操作名称"),
-        ("agent_actions", "input_params", "TEXT", 1, 0, "输入参数 JSON"),
-        ("agent_actions", "output_summary", "TEXT", 1, 0, "输出摘要"),
-        ("agent_actions", "status", "TEXT", 0, 0, "执行状态 success/error"),
-        ("agent_actions", "error_message", "TEXT", 1, 0, "错误信息"),
-        ("agent_actions", "elapsed_ms", "REAL", 1, 0, "耗时毫秒"),
-        ("agent_actions", "created_at", "TEXT", 0, 0, "执行时间"),
-        ("agent_actions", "conversation_id", "INTEGER", 1, 0, "关联对话ID"),
-        ("sql_templates", "id", "INTEGER", 0, 1, "主键自增ID"),
-        ("sql_templates", "name", "TEXT", 0, 0, "模板唯一名称"),
-        ("sql_templates", "sql_text", "TEXT", 0, 0, "SQL 语句"),
-        ("sql_templates", "description", "TEXT", 1, 0, "模板描述"),
-        ("sql_templates", "category", "TEXT", 1, 0, "分类"),
-        ("sql_templates", "is_safe", "INTEGER", 0, 0, "是否安全 0/1"),
-        ("sql_templates", "use_count", "INTEGER", 0, 0, "使用次数"),
-        ("sql_templates", "created_at", "TEXT", 0, 0, "创建时间"),
-        ("correction_rules", "id", "INTEGER", 0, 1, "主键自增ID"),
-        ("correction_rules", "error_pattern", "TEXT", 0, 0, "错误模式"),
-        ("correction_rules", "rule_description", "TEXT", 0, 0, "规则描述"),
-        ("correction_rules", "fix_template", "TEXT", 1, 0, "修复模板"),
-        ("correction_rules", "confidence", "REAL", 0, 0, "置信度 0-1"),
-        ("correction_rules", "source_action_id", "INTEGER", 1, 0, "来源操作ID"),
-        ("correction_rules", "created_at", "TEXT", 0, 0, "创建时间"),
+        # v5.0 移除死表: agent_actions, sql_templates, correction_rules
         # v3.3 领域表 FK 列
         ("tickets", "equipment_id", "TEXT", 1, 0, "关联设备ID FK → equipment"),
         ("tickets", "line_id", "TEXT", 1, 0, "关联产线ID FK → production_lines"),
@@ -676,50 +614,6 @@ def _seed_db_schema_info(conn: sqlite3.Connection) -> None:
     conn.commit()
     logger.info(f"已填充 {len(schemas)} 条 Schema 元数据")
 
-
-def _seed_sql_templates(conn: sqlite3.Connection) -> None:
-    """填入预验证 SQL 模板（供 execute_sql 参考）。"""
-    from datetime import datetime as dt
-    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
-    templates = [
-        ("today_tickets", "SELECT * FROM tickets WHERE created_at = date('now')", "查询今日工单", "查询", 1),
-        ("urgent_unassigned", "SELECT * FROM tickets WHERE priority IN ('紧急','高') AND status IN ('待处理','处理中') AND assignee = '' ORDER BY CASE priority WHEN '紧急' THEN 0 ELSE 1 END, created_at DESC", "紧急未分配工单", "查询", 1),
-        ("type_distribution", "SELECT type, COUNT(*) as cnt FROM tickets GROUP BY type ORDER BY cnt DESC", "工单类型分布", "统计", 1),
-        ("status_summary", "SELECT status, COUNT(*) as cnt FROM tickets GROUP BY status ORDER BY cnt DESC", "工单状态汇总", "统计", 1),
-        ("weekly_new", "SELECT * FROM tickets WHERE created_at >= date('now', '-7 days') ORDER BY created_at DESC", "近7天新增工单", "查询", 1),
-        ("stale_tickets", "SELECT * FROM tickets WHERE status = '待处理' AND created_at <= date('now', '-7 days') ORDER BY created_at", "积压超过7天的工单", "查询", 1),
-        ("assignee_workload", "SELECT assignee, COUNT(*) as cnt FROM tickets WHERE status IN ('待处理','处理中') AND assignee != '' GROUP BY assignee ORDER BY cnt DESC", "处理人工作量", "统计", 1),
-        ("recent_solved", "SELECT * FROM tickets WHERE status = '已解决' ORDER BY updated_at DESC LIMIT 10", "最近已解决工单", "查询", 1),
-    ]
-    conn.executemany(
-        "INSERT OR IGNORE INTO sql_templates (name, sql_text, description, category, is_safe, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        [(t[0], t[1], t[2], t[3], t[4], now) for t in templates],
-    )
-    conn.commit()
-    logger.info(f"已填充 {len(templates)} 条 SQL 模板")
-
-
-def _seed_correction_rules(conn: sqlite3.Connection) -> None:
-    """填入初始自校正规则。"""
-    from datetime import datetime as dt
-    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
-    rules = [
-        ("SQL 语法错误 near", "检查 SQL 语句中的关键字拼写和引号匹配", "修正 SQL 语法后重试执行", 0.8),
-        ("no such table", "确认表名拼写正确，使用 get_schema 查看可用表名", "使用 SELECT name FROM sqlite_master WHERE type='table' 获取表列表", 0.9),
-        ("no such column", "确认列名拼写正确，使用 get_schema 查看表结构", "使用 PRAGMA table_info(表名) 获取列列表", 0.9),
-        ("UNIQUE constraint failed", "数据已存在，使用 UPDATE 或跳过该记录", "改用 INSERT OR IGNORE 或先检查是否存在", 0.85),
-        ("日期格式无效", "日期参数需使用 YYYY-MM-DD 格式", "使用 date('now') 或 strftime('%Y-%m-%d') 获取正确格式", 0.8),
-        ("工具执行超时", "简化查询条件或增加超时时间", "添加 LIMIT 限制返回行数或缩小日期范围", 0.7),
-        ("工具执行失败.*已降级", "该工具连续失败已被熔断，跳过本次调用", "等待下一轮对话自动恢复，或手动重置熔断器", 0.75),
-    ]
-    conn.executemany(
-        "INSERT OR IGNORE INTO correction_rules (error_pattern, rule_description, fix_template, confidence, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [(r[0], r[1], r[2], r[3], now) for r in rules],
-    )
-    conn.commit()
-    logger.info(f"已填充 {len(rules)} 条自校正规则")
 
 def query_tickets_db(
     ticket_type: str | None = None,

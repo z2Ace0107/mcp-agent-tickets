@@ -158,7 +158,7 @@ TOOL_DEFINITIONS = [
     ),
     Tool(
         name="execute_sql",
-        description="执行只读SQL查询（仅允许SELECT/PRAGMA/EXPLAIN/WITH）。sql: SQL语句，必填。常用模板见sql_templates表。示例：SELECT * FROM tickets WHERE created_at = date('now')",
+        description="执行只读SQL查询（仅允许SELECT/PRAGMA/EXPLAIN/WITH）。sql: SQL语句，必填。示例：SELECT * FROM tickets WHERE created_at = date('now')",
         inputSchema={
             "type": "object",
             "properties": {
