@@ -29,7 +29,7 @@ from backend.tools import (
     execute_sql,
     execute_python,
 )
-from backend.prompts import SYSTEM_PROMPT, PREPROCESS_PROMPT
+# Prompts 由各 node 文件独立引用，graph.py 不再统一 import
 from backend.config import get_settings
 from backend.logger import get_logger
 
