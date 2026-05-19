@@ -27,22 +27,16 @@ def _create_llm():
 
 
 def reporter_node(state: dict) -> dict:
-    """Reporter: 绑 REPORTER_TOOLS，LLM 决定是否调 execute_python 画图。
-    工具调用回 tool_executor_node 统一执行，消除双路径。
-    """
-    from backend.graph import REPORTER_TOOLS, MAX_AGENT_ITERATIONS
+    """Reporter: 汇总对话历史 + 格式化最终回复。不绑定任何工具。"""
 
     llm = _create_llm()
-    # 仅在首轮绑定工具（后续迭代由 agent_iterations 控制）
-    agent_iterations = state.get("agent_iterations", 0)
-    if agent_iterations < MAX_AGENT_ITERATIONS - 1:
-        llm = llm.bind_tools(REPORTER_TOOLS)
+    # Reporter 永不绑工具，避免 LLM 模仿历史消息里的 tool_calls
+    llm = llm.bind_tools([], tool_choice="none")
 
     messages = state.get("messages", [])
     user_input = state.get("rewritten_query", state["user_input"])
     current_date = datetime.now().strftime("%Y年%m月%d日")
     system = SystemMessage(content=REPORTER_PROMPT.format(current_date=current_date))
-    # Reporter 永远在调用链末端，无论 messages 是否为空都要注入 system prompt
     if not messages:
         messages = [system, HumanMessage(content=user_input)]
     else:
