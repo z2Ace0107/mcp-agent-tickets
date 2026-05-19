@@ -1,27 +1,27 @@
 # -*- coding: utf-8 -*-
-"""v4.0 LineMind 评测脚本 — 50 题测试集自动打分
-核心指标：路由准确率 / 工具选择准确率 / 崩溃率
-路由和工具为客观匹配，回答相关性由 DeepSeek 裁判 LLM 打分（chat 类豁免）。
+"""v5.0 LineMind 评测脚本 — 全客观指标，零 LLM 消耗
+
+指标：
+- 路由准确率：Supervisor 是否正确分类
+- 工具 Jaccard：工具选择与预期的交集/并集比（0-1）
+- 工具执行成功率：调用是否返回 error 或触发降级
+- 效率：平均步数 + 工具调用次数 + 单题耗时
+- 崩溃率
 """
 
 import json
-import re
-import time
-import asyncio
 import sys
 import os
 import io
+import time
+import asyncio
 from datetime import datetime
 
-# Windows GBK 兼容：强制 stdout 使用 UTF-8
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
-
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
 
 from backend.agent import run_agent
 from backend import init_app
@@ -29,8 +29,14 @@ from backend.config import get_settings
 
 
 # ═══════════════════════════════════════════════════════════════
-# 辅助函数
+# 指标函数
 # ═══════════════════════════════════════════════════════════════
+
+AGENT_MAP = {
+    "query": "query_agent", "analyze": "analyze_agent",
+    "knowledge": "knowledge_agent", "chat": "reporter",
+}
+
 
 def load_test_queries(path: str | None = None) -> list[dict]:
     if path is None:
@@ -39,145 +45,56 @@ def load_test_queries(path: str | None = None) -> list[dict]:
         return json.load(f)
 
 
-def compute_sql_metrics(steps: list[dict]) -> dict:
-    """从 steps 解析 SQL 执行成功率。"""
-    sql_calls = [s for s in steps if "execute_sql" in s.get("action", "")]
-    total = len(sql_calls)
-    if total == 0:
-        return {"sql_total": 0, "sql_success": 0, "sql_success_rate": "N/A"}
-    success = sum(
-        1 for s in sql_calls
-        if '"error"' not in str(s.get("observation", "")).lower()
-        and not s.get("degraded", False)
-    )
-    return {
-        "sql_total": total,
-        "sql_success": success,
-        "sql_success_rate": f"{success}/{total} ({round(success/total*100, 1)}%)",
-    }
+def jaccard(a: set, b: set) -> float:
+    """Jaccard 相似系数。0=无重叠，1=完全一致。"""
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
 
 
-async def judge_relevance(question: str, output: str, category: str = "") -> dict:
-    """裁判 LLM 对回答相关性打分 (1-5)。"""
-    if not output or len(output) < 5:
-        return {"score": 1, "reason": "空输出"}
-
-    # 根据问题类型调整评分标准
-    type_hints = {
-        "chat": "这是闲聊/问候类问题。只要友好得体地回应即可打4-5分，不需要提供技术信息。",
-        "action": "这是工单操作类问题（更新状态/分配/回复）。关键看是否执行了正确的操作。",
-        "query": "这是工单查询类问题。关键看是否返回了正确的工单数据。",
-        "analyze": "这是统计分析类问题。关键看分析结果是否合理、有无数据支撑。",
-        "knowledge": "这是知识检索类问题。关键看检索到的方案是否与问题相关。",
-        "multi-hop": "这是多步推理类问题。需要综合多个信息源，评分时关注推理逻辑。",
-    }
-
-    settings = get_settings()
-    llm = ChatOpenAI(
-        model=settings.DEEPSEEK_MODEL,
-        api_key=settings.DEEPSEEK_API_KEY,
-        base_url=settings.DEEPSEEK_BASE_URL,
-        temperature=0,
-        max_tokens=150,
-    )
-
-    type_hint = type_hints.get(category, "")
-
-    prompt = f"""你是AI助手回答质量的评测裁判。请根据问题类型给出合理评分（1-5）。
-
-通用评分标准:
-1分 — 回答完全错误、有幻觉、或拒绝回答
-2分 — 有相关信息但遗漏了用户问题的核心部分
-3分 — 基本回答了问题，可以接受
-4分 — 较好地回答了问题，覆盖全面
-5分 — 完美回答，表述清晰、信息准确且完整
-
-{type_hint}
-
-用户问题：{question[:500]}
-
-AI回答：{output[:1500]}
-
-回复格式: <分数> <一句话理由>"""
-
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        text = response.content.strip()
-        match = re.search(r'[1-5]', text)
-        if match:
-            return {"score": int(match.group()), "reason": text[:80]}
-        return {"score": 3, "reason": f"解析失败: {text[:50]}"}
-    except Exception as e:
-        return {"score": 3, "reason": f"LLM调用失败: {str(e)[:50]}"}
+def tool_exec_success(steps: list[dict]) -> tuple[int, int]:
+    """统计工具调用成功率。"""
+    calls = [s for s in steps if s.get("action")]
+    if not calls:
+        return 0, 0
+    ok = sum(1 for c in calls
+             if not c.get("degraded")
+             and '"error"' not in str(c.get("observation", "")).lower())
+    return len(calls), ok
 
 
-# ═══════════════════════════════════════════════════════════════
-# 单题打分
-# ═══════════════════════════════════════════════════════════════
-
-async def score_result(test: dict, steps: list[dict], output: str, route: str, intent: str) -> dict:
-    """对单个测试结果打分，返回五项指标的完整评分。"""
+def score_result(test: dict, steps: list[dict], route: str, intent: str) -> dict:
+    """单题评分——全客观。"""
     used = [s.get("action", "") for s in steps]
     expected = test.get("expected_tools", [])
-
-    # 1. 路由匹配
-    agent_map = {
-        "query": "query_agent",
-        "analyze": "analyze_agent",
-        "knowledge": "knowledge_agent",
-        "chat": "reporter",
-    }
     expected_agent = test.get("expected_agent", "")
-    if not route and not intent:
-        route_correct = True
-        route_actual = "N/A"
-    elif route in ("chat", "simple_query", "complex"):
-        route_correct = (intent == expected_agent)
-        route_actual = f"{route}/{intent}"
-    else:
-        route_correct = (route == agent_map.get(expected_agent, ""))
-        route_actual = route
+    expected_route = AGENT_MAP.get(expected_agent, "?")
 
-    # 2. 工具匹配
-    if not expected:
-        tools_correct = (len(used) == 0)
-    else:
-        expected_set = set(expected)
-        used_set = set(used)
-        tools_correct = expected_set.issubset(used_set) or bool(expected_set & used_set)
+    # 路由
+    route_ok = (route == expected_route) if route else (
+        (AGENT_MAP.get(intent, "") == expected_route) if intent else False)
 
-    # 3. SQL 执行成功率
-    sql_metrics = compute_sql_metrics(steps)
+    # 工具 Jaccard
+    jac = jaccard(set(expected), set(used))
 
-    # 4. LLM 裁判回答相关性（chat 类豁免）
-    if test["category"] == "chat":
-        relevance = {"score": 5, "reason": "chat类豁免LLM评分"}
-    else:
-        relevance = await judge_relevance(test["question"], output, test["category"])
+    # 工具执行成功率
+    tc, ok = tool_exec_success(steps)
 
     # 错误收集
-    errors = []
-    for s in steps:
-        obs = str(s.get("observation", ""))
-        if '"error"' in obs.lower() or s.get("degraded", False):
-            errors.append(s.get("action", "unknown"))
+    errors = [s.get("action", "?") for s in steps
+              if s.get("degraded") or '"error"' in str(s.get("observation", "")).lower()]
 
     return {
-        "test_id": test["id"],
-        "question": test["question"],
-        "category": test["category"],
-        "difficulty": test["difficulty"],
-        "route_correct": route_correct,
-        "route_expected": agent_map.get(expected_agent, "?"),
-        "route_actual": route_actual,
-        "tools_correct": tools_correct,
-        "tools_used": used,
-        "tools_expected": expected,
-        "sql_total": sql_metrics["sql_total"],
-        "sql_success": sql_metrics["sql_success"],
-        "sql_success_rate": sql_metrics["sql_success_rate"],
-        "answer_relevance": relevance["score"],
-        "relevance_reason": relevance["reason"],
+        "test_id": test["id"], "question": test["question"],
+        "category": test["category"], "difficulty": test["difficulty"],
+        "route_correct": route_ok,
+        "route_expected": expected_route, "route_actual": route or intent or "N/A",
+        "tool_jaccard": round(jac, 2),
+        "tool_pass": jac >= 0.5,
+        "tools_used": used, "tools_expected": expected,
+        "tool_calls_total": tc, "tool_calls_ok": ok,
         "steps_count": len(steps),
         "errors": errors,
     }
@@ -187,12 +104,10 @@ async def score_result(test: dict, steps: list[dict], output: str, route: str, i
 # 批量评测
 # ═══════════════════════════════════════════════════════════════
 
-async def run_eval(max_tests: int | None = None, verbose: bool = False,
-                   seed: int | None = None) -> dict:
-    """运行完整评测。max_tests 限制数量，seed 固定随机抽样。"""
+async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dict:
     settings = get_settings()
     if not settings.DEEPSEEK_API_KEY:
-        print("❌ 未配置 DEEPSEEK_API_KEY，请先设置环境变量")
+        print("❌ 未配置 DEEPSEEK_API_KEY")
         return {"error": "no api key"}
 
     init_app()
@@ -209,42 +124,36 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False,
     for i, test in enumerate(queries):
         qid = test["id"]
         question = test["question"]
-        print(f"\n[{i+1}/{len(queries)}] {qid}: {question[:50]}...", end=" ", flush=True)
+        t0 = time.perf_counter()
+        print(f"[{i+1}/{len(queries)}] {qid}: {question[:50]}...", end=" ", flush=True)
 
         try:
             result = await run_agent(user_input=question)
-            output = result.get("output", "")
+            elapsed_ms = round((time.perf_counter() - t0) * 1000)
             steps = result.get("intermediate_steps", [])
             route = result.get("route", "")
             intent = result.get("intent", "")
 
-            score = await score_result(test, steps, output, route, intent)
+            score = score_result(test, steps, route, intent)
+            score["elapsed_ms"] = elapsed_ms
             results.append(score)
 
-            status = "PASS" if score["tools_correct"] and score["route_correct"] else (
-                "WARN" if score["tools_correct"] or score["route_correct"] else "FAIL"
-            )
-            sql_info = f" sql={score['sql_success_rate']}" if score["sql_total"] > 0 else ""
-            print(f"{status} | route={'OK' if score['route_correct'] else 'X'} "
-                  f"tools={'OK' if score['tools_correct'] else 'X'} "
-                  f"rel={score['answer_relevance']}/5"
-                  f"{sql_info}"
-                  f" steps={score['steps_count']}")
+            status = "PASS" if score["route_correct"] and score["tool_pass"] else (
+                "WARN" if score["route_correct"] or score["tool_pass"] else "FAIL")
+            print(f"{status} route={'OK' if score['route_correct'] else 'X'} "
+                  f"jac={score['tool_jaccard']:.2f} "
+                  f"exec={score['tool_calls_ok']}/{score['tool_calls_total']} "
+                  f"steps={score['steps_count']}")
         except Exception as e:
             print(f"CRASH: {str(e)[:80]}")
             results.append({
-                "test_id": qid,
-                "question": question,
-                "category": test["category"],
-                "difficulty": test["difficulty"],
-                "route_correct": False,
-                "route_expected": "?",
+                "test_id": qid, "question": question,
+                "category": test["category"], "difficulty": test["difficulty"],
+                "route_correct": False, "route_expected": "?",
                 "route_actual": "CRASH",
-                "tools_correct": False,
-                "tools_used": [],
-                "tools_expected": test.get("expected_tools", []),
-                "sql_total": 0, "sql_success": 0, "sql_success_rate": "N/A",
-                "answer_relevance": 1, "relevance_reason": f"崩溃: {str(e)[:50]}",
+                "tool_jaccard": 0.0, "tool_pass": False,
+                "tools_used": [], "tools_expected": test.get("expected_tools", []),
+                "tool_calls_total": 0, "tool_calls_ok": 0,
                 "steps_count": 0,
                 "errors": [str(e)[:200]],
                 "crash": True,
@@ -252,79 +161,79 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False,
 
     elapsed = time.time() - start_time
 
-    # ── 汇总统计 ──
-    total = len(results)
-    route_ok = sum(1 for r in results if r["route_correct"])
-    tools_ok = sum(1 for r in results if r["tools_correct"])
-    relevance_avg = sum(r["answer_relevance"] for r in results) / total if total else 0
+    # ── 汇总 ──
     crashes = sum(1 for r in results if r.get("crash"))
-    errors = sum(len(r.get("errors", [])) for r in results)
+    valid = [r for r in results if not r.get("crash")]
+    n = len(valid) or 1
 
-    # SQL 汇总
-    sql_total_all = sum(r["sql_total"] for r in results)
-    sql_success_all = sum(r["sql_success"] for r in results)
-    sql_rate_all = f"{sql_success_all}/{sql_total_all} ({round(sql_success_all/sql_total_all*100, 1)}%)" if sql_total_all else "N/A"
+    route_ok = sum(r["route_correct"] for r in valid)
+    tool_pass = sum(r["tool_pass"] for r in valid)
+    jac_avg = sum(r["tool_jaccard"] for r in valid) / n
+    step_avg = sum(r["steps_count"] for r in valid) / n
+    ms_avg = sum(r.get("elapsed_ms", 0) for r in valid) / n
+    tc = sum(r["tool_calls_total"] for r in valid)
+    to = sum(r["tool_calls_ok"] for r in valid)
+    errs = sum(len(r.get("errors", [])) for r in valid)
 
     # 按类别
-    by_category = {}
-    for r in results:
-        cat = r["category"]
-        if cat not in by_category:
-            by_category[cat] = {"total": 0, "tools_ok": 0, "route_ok": 0, "relevance_sum": 0}
-        by_category[cat]["total"] += 1
-        if r["tools_correct"]:
-            by_category[cat]["tools_ok"] += 1
-        if r["route_correct"]:
-            by_category[cat]["route_ok"] += 1
-        by_category[cat]["relevance_sum"] += r["answer_relevance"]
+    by_cat = {}
+    for r in valid:
+        c = r["category"]
+        if c not in by_cat:
+            by_cat[c] = {"n": 0, "route": 0, "tp": 0, "jac": 0.0, "ms": 0}
+        by_cat[c]["n"] += 1
+        by_cat[c]["route"] += r["route_correct"]
+        by_cat[c]["tp"] += r["tool_pass"]
+        by_cat[c]["jac"] += r["tool_jaccard"]
+        by_cat[c]["ms"] += r.get("elapsed_ms", 0)
 
     # 按难度
-    by_difficulty = {}
-    for r in results:
-        diff = r["difficulty"]
-        if diff not in by_difficulty:
-            by_difficulty[diff] = {"total": 0, "tools_ok": 0, "route_ok": 0}
-        by_difficulty[diff]["total"] += 1
-        if r["tools_correct"]:
-            by_difficulty[diff]["tools_ok"] += 1
-        if r["route_correct"]:
-            by_difficulty[diff]["route_ok"] += 1
+    by_diff = {}
+    for r in valid:
+        d = r["difficulty"]
+        if d not in by_diff:
+            by_diff[d] = {"n": 0, "route": 0, "tp": 0}
+        by_diff[d]["n"] += 1
+        by_diff[d]["route"] += r["route_correct"]
+        by_diff[d]["tp"] += r["tool_pass"]
 
     report = {
         "meta": {
             "timestamp": datetime.now().isoformat(),
-            "total_tests": total,
+            "total_tests": len(results),
             "elapsed_seconds": round(elapsed, 1),
-            "avg_seconds_per_test": round(elapsed / total, 1) if total else 0,
+            "avg_seconds_per_test": round(elapsed / len(results), 1) if results else 0,
         },
         "summary": {
-            "route_accuracy": f"{route_ok}/{total} ({round(route_ok/total*100, 1)}%)" if total else "N/A",
-            "tool_selection_accuracy": f"{tools_ok}/{total} ({round(tools_ok/total*100, 1)}%)" if total else "N/A",
-            "sql_success_rate": sql_rate_all,
-            "avg_answer_relevance": f"{round(relevance_avg, 1)}/5",
+            "route_accuracy": f"{route_ok}/{n} ({round(route_ok/n*100, 1)}%)",
+            "avg_tool_jaccard": round(jac_avg, 2),
+            "tool_pass_rate": f"{tool_pass}/{n} ({round(tool_pass/n*100, 1)}%)",
+            "tool_exec_success": f"{to}/{tc} ({round(to/tc*100, 1)}%)" if tc else "N/A",
+            "avg_steps": round(step_avg, 1),
+            "avg_ms_per_test": round(ms_avg, 0),
             "crashes": crashes,
-            "tool_errors": errors,
+            "tool_errors_in_steps": errs,
         },
         "by_category": {
-            cat: {
-                "total": v["total"],
-                "tool_accuracy": f"{round(v['tools_ok']/v['total']*100, 1)}%" if v["total"] else "N/A",
-                "route_accuracy": f"{round(v['route_ok']/v['total']*100, 1)}%" if v["total"] else "N/A",
-                "avg_relevance": f"{round(v['relevance_sum']/v['total'], 1)}/5" if v["total"] else "N/A",
+            c: {
+                "total": v["n"],
+                "route": f"{v['route']}/{v['n']} ({round(v['route']/v['n']*100, 1)}%)",
+                "tool_jaccard": round(v["jac"] / v["n"], 2),
+                "tool_pass": f"{v['tp']}/{v['n']} ({round(v['tp']/v['n']*100, 1)}%)",
+                "avg_ms": round(v["ms"] / v["n"], 0),
             }
-            for cat, v in sorted(by_category.items())
+            for c, v in sorted(by_cat.items())
         },
         "by_difficulty": {
-            diff: {
-                "total": v["total"],
-                "tool_accuracy": f"{round(v['tools_ok']/v['total']*100, 1)}%" if v["total"] else "N/A",
-                "route_accuracy": f"{round(v['route_ok']/v['total']*100, 1)}%" if v["total"] else "N/A",
+            d: {
+                "total": v["n"],
+                "route": f"{v['route']}/{v['n']} ({round(v['route']/v['n']*100, 1)}%)",
+                "tool_pass": f"{v['tp']}/{v['n']} ({round(v['tp']/v['n']*100, 1)}%)",
             }
-            for diff, v in sorted(by_difficulty.items())
+            for d, v in sorted(by_diff.items())
         },
         "details": results,
     }
-
     return report
 
 
@@ -333,36 +242,37 @@ async def run_eval(max_tests: int | None = None, verbose: bool = False,
 # ═══════════════════════════════════════════════════════════════
 
 def print_report(report: dict):
-    """打印评测报告到控制台（精简版：路由+工具+崩溃）。"""
     m = report["meta"]
     s = report["summary"]
 
-    print("\n" + "═" * 50)
-    print(f"  LineMind v4.0  评测报告")
-    print("═" * 50)
-    print(f"  {m['total_tests']} 题  ⏱ {m['elapsed_seconds']}s  "
-          f"({m['avg_seconds_per_test']}s/题)  💥 {s['crashes']}")
-    print()
-    print(f"  路由准确率    {s['route_accuracy']}")
-    print(f"  工具选择率    {s['tool_selection_accuracy']}")
-    print()
-    print("  类别明细")
-    for cat, v in report.get("by_category", {}).items():
-        print(f"  {cat:10s}  {v['total']:2d}题  路由 {v['route_accuracy']:>6s}  "
-              f"工具 {v['tool_accuracy']:>6s}")
+    print("\n" + "═" * 55)
+    print(f"  LineMind v5.0 评测  {m['total_tests']}题 ⏱{m['elapsed_seconds']}s "
+          f"💥{s['crashes']}")
+    print("═" * 55)
+    print(f"  路由准确率      {s['route_accuracy']}")
+    print(f"  工具 Jaccard    {s['avg_tool_jaccard']}  (1=完全匹配)")
+    print(f"  工具通过率      {s['tool_pass_rate']}  (Jaccard≥0.5)")
+    print(f"  工具执行成功率  {s['tool_exec_success']}")
+    print(f"  平均步数/耗时   {s['avg_steps']}步 / {s['avg_ms_per_test']}ms")
+    print(f"  工具异常        {s['tool_errors_in_steps']}")
     print()
 
-    # 失败用例
+    print(f"  {'类别':10s} {'题':>3s} {'路由':>10s} {'Jac':>6s} {'工具通过':>10s} {'耗时':>6s}")
+    print(f"  {'─'*10} {'─'*3} {'─'*10} {'─'*6} {'─'*10} {'─'*6}")
+    for cat, v in report.get("by_category", {}).items():
+        print(f"  {cat:10s} {v['total']:3d}  {v['route']:10s} {v['tool_jaccard']:>5}  {v['tool_pass']:10s} {v['avg_ms']:>4}ms")
+    print()
+
     failed = [r for r in report["details"]
-              if not (r.get("tools_correct") and r.get("route_correct"))]
+              if not r.get("crash") and (not r["route_correct"] or not r["tool_pass"])]
     if failed:
         print(f"  需关注 ({len(failed)} 题):")
         for r in failed:
-            tools = "OK" if r.get("tools_correct") else f"X (used:{r.get('tools_used',[])} expected:{r.get('tools_expected',[])})"
-            route = "OK" if r.get("route_correct") else f"X (actual:{r.get('route_actual','?')} expected:{r.get('route_expected','?')})"
-            print(f"  {r['test_id']} [{r['category']}] {r['question'][:40]}...")
-            print(f"    路由:{route}  工具:{tools}")
-    print("═" * 50)
+            route = "OK" if r["route_correct"] else f"X(→{r.get('route_actual','?')}, want {r.get('route_expected','?')})"
+            tool = f"jac={r['tool_jaccard']:.2f} (used:{r['tools_used']} want:{r['tools_expected']})"
+            print(f"  {r['test_id']} [{r['category']}/{r['difficulty']}] {r['question'][:45]}...")
+            print(f"    路由:{route}  工具:{tool}")
+    print("═" * 55)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -371,22 +281,14 @@ def print_report(report: dict):
 
 if __name__ == "__main__":
     import argparse
-    import random
 
-    parser = argparse.ArgumentParser(description="LineMind 评测脚本")
-    parser.add_argument("-n", "--count", type=int, default=None,
-                        help="限制测试数量（默认全部 50 题）")
-    parser.add_argument("-o", "--output", type=str, default=None,
-                        help="输出 JSON 报告路径")
-    parser.add_argument("-q", "--quiet", action="store_true",
-                        help="仅输出最终报告")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="随机种子（固定抽样顺序，结果可复现）")
+    parser = argparse.ArgumentParser(description="LineMind 评测（全客观，零 LLM 消耗）")
+    parser.add_argument("-n", "--count", type=int, default=None, help="测试数量（默认全部 50 题）")
+    parser.add_argument("-o", "--output", type=str, default=None, help="JSON 报告输出路径")
+    parser.add_argument("--seed", type=int, default=None, help="随机种子（固定抽样，结果可复现）")
     args = parser.parse_args()
 
-    report = asyncio.run(run_eval(
-        max_tests=args.count, verbose=not args.quiet, seed=args.seed,
-    ))
+    report = asyncio.run(run_eval(max_tests=args.count, seed=args.seed))
     print_report(report)
 
     if args.output:

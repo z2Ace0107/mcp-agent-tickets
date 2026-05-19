@@ -95,7 +95,7 @@
     "expected_agent": "analyze",
     "expected_tools": ["analyze_tickets_tool"],
     "difficulty": "medium",
-    "category": "query",
+    "category": "analyze",
     "check": "使用analyze_tickets，analysis_type=trend"
   },
   {
@@ -104,7 +104,7 @@
     "expected_agent": "analyze",
     "expected_tools": ["analyze_tickets_tool"],
     "difficulty": "easy",
-    "category": "query",
+    "category": "analyze",
     "check": "使用analyze_tickets，analysis_type=type_distribution"
   },
 
