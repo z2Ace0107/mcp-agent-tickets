@@ -33,12 +33,11 @@ def analyze_node(state: dict) -> dict:
 
     messages = state.get("messages", [])
     rewritten = state.get("rewritten_query", state["user_input"])
-
+    system = SystemMessage(content=ANALYZE_AGENT_PROMPT)
     if not messages:
-        messages = [
-            SystemMessage(content=ANALYZE_AGENT_PROMPT),
-            HumanMessage(content=rewritten),
-        ]
+        messages = [system, HumanMessage(content=rewritten)]
+    else:
+        messages = [system] + list(messages)
 
     from backend.graph import strip_reasoning_content
     strip_reasoning_content(messages)
