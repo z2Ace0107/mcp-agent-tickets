@@ -48,8 +48,7 @@ class Settings:
     MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
     MAX_ITERATIONS: int = int(os.getenv("MAX_ITERATIONS", "5"))
 
-    # MCP Server
-    MCP_SERVER_PORT: int = int(os.getenv("MCP_SERVER_PORT", "8000"))
+    # MCP Server (stdio transport, no HTTP port needed)
 
 
 _settings: Settings | None = None

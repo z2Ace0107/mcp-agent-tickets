@@ -23,13 +23,14 @@ from backend.scheduler import check_urgent_alerts, get_cached_alerts, generate_r
 # ============================================================
 
 ROUTE_LABELS = {
-    "chat":          ("💬", "直接回复", "#93C5FD"),
-    "simple_query":  ("⚡", "快速查询", "#4ADE80"),
-    "complex":       ("🧠", "深度推理", "#C084FC"),
+    "query_agent":     ("🔍", "Query 查询", "#4ADE80"),
+    "analyze_agent":   ("📊", "Analyze 分析", "#C084FC"),
+    "knowledge_agent": ("📚", "Knowledge 检索", "#F59E0B"),
+    "reporter":        ("💬", "Reporter 生成", "#93C5FD"),
 }
 INTENT_LABELS = {
-    "query": "查询工单", "analyze": "统计分析", "recommend": "智能推荐",
-    "search": "搜索方案", "chat": "闲聊", "unknown": "未知",
+    "query": "查询工单", "analyze": "统计分析",
+    "knowledge": "知识检索", "chat": "闲聊",
 }
 
 TOOL_CN_MAP = {
