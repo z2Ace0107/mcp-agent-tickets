@@ -1,249 +1,322 @@
-# AgentForge — 完整项目优化计划
+# AgentForge — 完整优化计划 v2
 
-> 目标：让项目从"带工具调用的 LLM App"升级为真正的 Agent 系统，拿到实习面试
+> 目标：把 Agent 层从"多角色 Prompt"升级为真正的闭环 Agent 系统
 
 ---
 
-## 一、当前项目状态
+## 一、现状诊断
 
-### 1.1 分层成熟度评估
+### 1.1 分层成熟度
 
 | 层 | 评分 | 现状 |
 |----|:---:|------|
-| Agent | ⭐ | 最弱。5 Agent 路由分发 = 多角色 Prompt，不是多 Agent。没有 Agent Loop，没有 Planning，没有 Reflection |
-| Tools | ⭐⭐⭐⭐ | 12 工具 + 断路器 + 重试 + 超时 + Python 沙箱。透传层冗余 |
-| RAG | ⭐⭐⭐⭐ | 双通道（ChromaDB + FTS5 → RRF）+ 消融实验。无增量索引 |
-| Eval | ⭐⭐⭐⭐ | 全客观指标 + Jaccard + 50 题 6 类。缺 multi-hop 题 |
-| Data | ⭐⭐⭐ | 1219 行单体文件。Schema 设计好、种子数据好。无连接池、无迁移 |
-| Config | ⭐⭐⭐ | 正常。缺 .env.example 和启动验证 |
-| Frontend | ⭐⭐ | 1246 行单文件。CSS/JS 嵌入 Python |
-| Prompts | ⭐⭐ | 死代码已清。没有 Agent 行为模式 |
+| **Agent** | ⭐ | 最弱。4-Agent Supervisor 本质是"同一个模型 + 同一个执行循环 + 换了 4 个 system prompt 名字"。每次只调一个工具就停，没有执行闭环 |
+| Tools | ⭐⭐⭐⭐ | 12 工具 + 断路器 + 重试 + 超时 + Python 沙箱 + AST 分离 + Plotly 双引擎 |
+| RAG | ⭐⭐⭐⭐ | 双通道（ChromaDB 向量 + FTS5 关键词 → RRF 融合）+ 15 题消融实验 |
+| Eval | ⭐⭐⭐ | 50 题覆盖 6 类，全客观指标。但 40/50 题期望单工具调用，不测多步执行 |
+| Data | ⭐⭐⭐ | 13 表星型 Schema，30+ 条真实工厂种子数据，含 FK 关联 |
+| Config | ⭐⭐⭐ | .env.example 完备，启动验证 |
+| Frontend | ⭐⭐ | 1247 行单文件，流式输出可用但 CSS/JS 嵌入 Python |
 
 ### 1.2 核心问题
 
-> Agent 和 Chatbot 的唯一区别：当模型返回 tool_calls 时，执行工具并继续循环，而不是直接结束。（zero2Agent 02章）
+当前 4-Agent 架构（Supervisor → Query/Analyze/Knowledge → Reporter）本质是 **Workflow 披着多 Agent 的皮**。
 
-你的项目没有这个循环。Agent 每次只调一个工具就停。
+诊断依据（zero2Agent Basic 08）：
+> "同一个模型、同一个上下文、同一个执行循环，只是换了几个 system prompt 名字——这更像是多角色提示词，不一定真的构成有意义的多 Agent 系统。"
 
----
+三个子 Agent（query_node / analyze_node / knowledge_node）共享同一个 `_create_llm()`、同一套消息处理、同一个 AgentState。唯一区别是绑了不同的工具子集和换了 prompt。这不是多 Agent——**这是 3 张角色卡片**。
 
-## 二、面试定位策略
+Agent 和 Chatbot 的本质区别（zero2Agent Basic 01 + Claude Code 01）：
+> "Agent 是一个围绕目标持续推进任务的系统。while(hasToolCalls) 循环——检测到工具调用时继续执行并回调 LLM，而不是直接结束。"
 
-**不是"什么都会"。是"两个强项 + 一个亮点"。**
+当前系统没有这个循环。每个 Agent 调一个工具就停。
 
-| 角色 | 模块 | 面试能说什么 |
-|------|------|------------|
-| 强项 1 | RAG 检索 | 双通道 + RRF + 消融实验数据 |
-| 强项 2 | 工具安全 | 沙箱 + 断路器 + 重试 + 超时 |
-| 亮点 | Agent Loop | 80 行自实现 while(hasToolCalls) |
+### 1.3 评测不匹配
 
-面试官问 RAG → 你是专家。问工具安全 → 你是专家。问 Agent 本质 → 你能写代码。问 Memory/Context Engine → 诚实说在计划里。
+50 道评测题中 40 道 `expected_tools` 只有 1 个工具。Q043 的 `check` 说"查询→搜索→汇总，跨 Agent 协作"，但 `expected_tools` 只列了 `query_tickets_tool`。**评测被旧架构的能力上限框住了。**
 
 ---
 
-## 三、优化清单（按面试权重排）
+## 二、目标架构
 
-### Tier 0 — 决定简历过不过筛（必须先做）
+### 2.1 核心改动
 
-| # | 改什么 | 为什么 | 耗时 |
-|---|--------|--------|:---:|
-| 1 | README 重写 | "制造业工单系统"→ HR 关掉。"闭环 Agent 执行框架"→ HR 继续看 | 1h |
-| 2 | 简历条目重写 | 聚焦 RAG + 工具安全 + Agent Loop。数字：12 工具 0 崩溃、置信度 +10.5%、50 题评测 | 30min |
+```
+旧: Supervisor → Query/Analyze/Knowledge → 调一次工具 → END
+新: Agent (agent_loop.py) → Tool Executor → Agent → ... → END
+         ↑                          │
+         └──────────────────────────┘
+            while(hasToolCalls) 循环
+```
 
-### Tier 1 — 决定面试过不过第一轮
+**Agent Loop 是新的心脏**，LangGraph 退化为薄壳（状态管理 + 流式输出）。
 
-| # | 改什么 | 为什么 | 耗时 |
-|---|--------|--------|:---:|
-| 3 | agent_loop.py | Agent 和 Chatbot 本质区别。80 行代码能讲 | 2天 |
-| 4 | multi-hop 评测 10 题 | 验证 Agent 真正在"多步执行" | 1h |
-| 5 | RAG 消融数据写进 README | 双通道 vs 单通道对比表 | 30min |
-| 6 | prompts.py 重写 | Plan-Act-Observe-Reflect 注入 | 1h |
-| 7 | graph.py 简化 | 7 节点 → 3 节点 | 1h |
+### 2.2 架构分层
 
-### Tier 2 — 面试能聊深
+```
+┌─ LangGraph（壳）─────────────────────────┐
+│  agent_node ──→ tool_executor_node ──→ END│
+│      ↑              │                     │
+│      └──────────────┘                     │
+│                                            │
+│  agent_node 内部 = AgentLoop.run()          │
+│    Plan → Act(LLM) → Observe(代码) → Reflect │
+└────────────────────────────────────────────┘
+```
 
-| # | 改什么 | 为什么 | 耗时 |
-|---|--------|--------|:---:|
-| 8 | TodoWrite 步骤清单 | Claude Code 同款。面试官一听知道读过源码 | 1h |
-| 9 | 前端展示 Plan/Reflect | 面试能截图：Agent 规划了 3 步、正在执行第 2 步 | 2h |
-| 10 | 沙箱安全测试 3 个 | "怎么防 prompt injection？"→ 测试证明 | 1h |
-| 11 | memory.py | 三层记忆：会话内 / 跨会话 / RAG | 2h |
+### 2.3 文件结构（改造后）
 
-### Tier 3 — 加分但不致命
+```
+linemind/
+├── backend/
+│   ├── agent_loop.py      ← ★ 新增：Agent 核心循环
+│   ├── tools.py           ← 保留（12工具 + 断路器 + 沙箱）
+│   ├── rag.py             ← 保留（双通道 RRF）
+│   ├── database.py        ← 保留
+│   ├── graph.py           ← 简化：2节点（agent + tool_executor）
+│   ├── prompts.py         ← 重写：1个 AGENT_PROMPT
+│   ├── config.py          ← 保留
+│   ├── logger.py          ← 保留
+│   ├── scheduler.py       ← 保留
+│   └── mcp_server.py      ← 保留
+├── frontend/
+│   └── app.py             ← 小改（适配新 Event 流）
+├── eval/
+│   ├── judge.py           ← 评测框架保留
+│   ├── bench_rag.py       ← 保留
+│   └── test_queries.json  ← 重写（真正多步题）
+├── CHANGELOG.md           ← 保留（记录小步更新）
+├── AGENTS.md              ← Claude 开发入口 + 项目交接
+├── PLAN.md                ← 本文档
+└── README.md              ← 实现完成后重写
+```
 
-| # | 改什么 | 为什么 |
-|---|--------|--------|
-| 12 | 飞书 Webhook | 企业集成亮点 |
-| 13 | .env.example | clone 下来能跑 |
-| 14 | Data 层拆分 | 1219 行 → 3-4 文件 |
-| 15 | Frontend 拆分 | 1246 行 → 3 文件 |
-| 16 | RAG 增量索引 | 不用每次 Nuke & Pave |
+### 2.4 删除清单
+
+```
+backend/nodes/supervisor.py   # 意图分类由 Agent 自己完成
+backend/nodes/query.py        # 合并为 agent_loop.py
+backend/nodes/analyze.py      # 合并为 agent_loop.py
+backend/nodes/knowledge.py    # 合并为 agent_loop.py
+backend/nodes/__init__.py     # 目录清空
+backend/agent.py              # 入口逻辑合并进 agent_loop.py
+```
 
 ---
 
-## 四、学习资源
+## 三、Agent Loop 设计
 
-### 网站爬取内容：`_zero2Agent/` 目录（58 个文件）
-
-### 推荐学习顺序（和 AI 开发并行）
-
-| 阶段 | 先学（zero2Agent） | AI 同时做（项目） |
-|------|-------------------|-----------------|
-| 1 | Basic 01-03（Agent 定义、Workflow vs Agent、核心组成） | README 重写 |
-| 2 | Basic 05 Tool Calling | 梳理 12 工具 |
-| 3 | Basic 06 Memory | memory.py |
-| 4 | Basic 07 Planning/Reflection/RAG | prompts.py 重写 |
-| 5 | Basic 08 单 vs 多 Agent | graph.py 简化 |
-| 6 | OpenClaw 01-02 + Claude Code 01 | **agent_loop.py** |
-| 7 | Claude Code 03 TodoWrite | TodoWrite 模式 |
-| 8 | OpenClaw 05 Context Engine | 上下文管理 |
-| 9 | Agent Interview 模块 | 面试准备 |
-
-### 学习参考网站
-
-- [zero2Agent](https://onefly.top/zero2Agent/) — Agent 工程完整教程（爬取内容在 _zero2Agent/）
-- [Anthropic Harness Design](https://www.anthropic.com/engineering/harness-design-long-running-apps)
-- [LangGraph 文档](https://langchain-ai.github.io/langgraph/)
-
----
-
-## 五、Agent Loop 核心（必做）
+### 3.1 核心循环
 
 ```python
-# backend/agent_loop.py — ~80行
-
 class AgentLoop:
-    """while(hasToolCalls) — Agent 和 Chatbot 的唯一区别"""
+    """围绕目标持续推进任务的执行循环。"""
 
     def __init__(self, llm, tools, max_iterations=8):
         self.llm = llm
-        self.tools = tools
+        self.tools = tools          # 12 工具全集
         self.max_iterations = max_iterations
 
-    async def run(self, goal: str, history: list):
+    async def run(self, goal: str, history: list) -> AsyncGenerator[Event, None]:
         state = TaskState(goal=goal)
-        messages = history + [SystemMessage(content=AGENT_PROMPT.format(
-            goal=goal, tools=self._tool_list()))]
+        messages = self._build_messages(goal, history)
 
         while state.iterations < self.max_iterations:
+            # 上下文压缩检查
+            messages = self.context.compress_if_needed(messages)
+
+            # Act: 调 LLM
             response = await self.llm.ainvoke(messages)
-            yield Event("message", response.content)
+            yield Event("token", response.content)
 
             if not response.tool_calls:
                 yield Event("done", response.content)
                 return
 
-            results = await self._execute_with_safety(response.tool_calls)
+            # Act: 执行工具（复用 graph.py 的 _execute_single_tool）
+            results = await self._execute_tools(response.tool_calls)
             yield Event("tool_results", results)
 
-            messages.append(response)
-            messages.extend(results)
+            # Observe: 程序化检查结果
+            observation = self._observe(results, state)
+
+            # Reflect: 观察结果注入 prompt，更新状态
+            state.update(observation)
+            messages = self._reflect(messages, response, results, observation)
+
+            # 多维退出判断
+            if self._should_stop(response, observation, state):
+                final = await self._generate_final_answer(messages, state)
+                yield Event("done", final)
+                return
+
             state.iterations += 1
 ```
 
-`_execute_with_safety` 直接复用当前 `graph.py` 的 `_execute_single_tool`。
+### 3.2 五个关键模块
 
-### Prompt 注入 Planning
+**TaskState — 目标驱动的结构化状态**
+```python
+@dataclass
+class TaskState:
+    goal: str                     # 用户原始目标
+    completed_steps: list[str]    # 已完成的步骤描述
+    data_collected: dict          # 已收集的结构化数据
+    tool_call_history: list       # 调了哪些工具 + 关键结果
+    iterations: int               # 当前轮次
+    status: str                   # planning | executing | done
+```
+
+**Observation — 程序化检查（非 LLM 猜测）**
+
+检查每个工具结果：error? 空? 重复? 有效? 返回结构化 Observation，注入 prompt 让 LLM 决策下一步。
+
+**StopDecision — 多维退出条件**
+
+1. LLM 没调工具（主动结束）
+2. 陷入循环（重复调同一工具且结果没变化）
+3. 数据已够回答问题
+4. 达到迭代上限
+
+**ContextManager — 自动压缩**
+
+超预算时对早期消息做 LLM 摘要，保留最近 N 条原文。
+
+**Plan + TodoWrite — 可观测规划**
+
+Agent 内部维护步骤清单，前端渲染为 TodoWrite 进度条。
+
+### 3.3 Prompt 设计
+
+4 个角色 Prompt → 1 个 Agent Prompt：
 
 ```python
-AGENT_PROMPT = """你是 LineMind 智能工单 Agent。
+AGENT_PROMPT = """你是 LineMind 智能工单助手。你有 12 个工具。
 
-## 执行模式（Plan → Act → Observe → Reflect）
-1. Plan: 判断需要几步、用哪些工具
-2. Act: 调用工具执行
-3. Observe: 检查结果——完整吗？有 error 吗？
-4. Reflect: 够了吗？不够 → 继续。够了 → 输出答案
+## 工作方式
+每条系统消息包含上一轮工具执行的 [观察结果]。
+基于观察决定：还需要什么？还是已经够了？
 
-## 规则
-- 能一步完成的不拆两步
-- 工具失败 → 换方法，不放弃
-- 信息不足 → 继续查，不编造
-- 数据够了就停
+## 核心规则
+- 查询工单 → query_tickets，不要直接 execute_sql
+- 统计/分布 → analyze_tickets
+- 历史方案 → search_solutions（先内后外）
+- 画图 → 先拿数据再调 execute_python
+- 工具失败 → 换方法，不反复重试
+- 数据够了 → 输出答案，不过度探索
+- 不确定 → 继续查，但一轮不超过 3 个工具
 
-## 状态
-目标: {goal} | 已完成: {completed_steps} | 剩余轮次: {remaining}
-"""
-```
+## 工具清单
+{tools}
 
-### 图简化
-
-7 节点 → 3 节点：
-```
-agent_node → tool_executor_node → agent_node → END
-```
-
-砍掉 Supervisor、Query/Analyze/Knowledge/Reporter 节点。保留 tool_executor_node。
-
-### 不改的模块
-
-RAG 双通道、12 工具 + 断路器 + 沙箱、Streamlit 前端 + 流式、MCP server、评测脚本
-
----
-
-## 六、文件结构（改造后）
-
-```
-linemind/
-├── backend/
-│   ├── agent_loop.py      ← ★ 新增：Agent Loop
-│   ├── tools.py           ← 保留
-│   ├── rag.py             ← 保留
-│   ├── memory.py          ← 新增
-│   ├── evaluator.py       ← 新增（可选）
-│   ├── database.py        ← 保留
-│   ├── graph.py           ← 简化：3节点
-│   ├── prompts.py         ← 重写：1个 AGENT_PROMPT
-│   ├── config.py          ← 保留
-│   └── mcp_server.py      ← 保留
-├── frontend/
-│   └── app.py             ← 小改
-├── eval/
-│   ├── judge.py           ← 保留
-│   ├── bench_rag.py       ← 保留
-│   └── test_queries.json  ← 加 multi-hop
-├── _zero2Agent/           ← 网站爬取内容（学习资料）
-├── README.md              ← 重写
-├── AGENTS.md              ← Claude 入口
-├── PLAN.md                ← 本文档
-├── CHANGELOG.md           ← 保留
-├── HANDOFF.md             ← /clear 恢复
-└── requirements.txt
+## 当前任务
+目标: {goal}
+已完成: {completed}
+计划: {plan}"""
 ```
 
 ---
 
-## 七、执行顺序
+## 四、评测重新设计
 
+### 4.1 三类题
+
+**A 类：单步直达（~15 题）** — 验证基础能力不退化
 ```
-第一步：README 重写 (1h)             Tier 0
-第二步：agent_loop.py (2天)          Tier 1 核心
-第三步：prompts.py 重写 (1h)         Tier 1
-第四步：graph.py 简化 (1h)           Tier 1
-第五步：multi-hop 评测 (1h)          Tier 1
-第六步：RAG 数据写进 README (30min)  Tier 1
-第七步：TodoWrite (1h)               Tier 2
-第八步：前端展示 Plan/Reflect (2h)   Tier 2
-第九步：沙箱安全测试 (1h)             Tier 2
-第十步：memory.py (2h)               Tier 2
+"工单WO-20260506-002的详细信息？"
+→ 调 get_ticket_detail → 返回 → 不继续
+→ 测什么: Agent 知道什么时候该停
+```
+
+**B 类：真正多步（~25 题）** — 核心指标
+```
+"找出最近一周的紧急设备故障工单，分析涉及的设备型号，
+ 然后查一下这些型号有没有历史维修方案。"
+→ query_tickets → 分析设备列表 → search_solutions 多个 → 综合
+→ 测什么: Plan-Act-Observe-Reflect 全链路
+```
+
+**C 类：需要内部决策（~10 题）** — 区分 Agent 和 Workflow
+```
+"查一下质量异常工单里有没有跟40Cr钢材相关的。
+ 有就推荐处理人；没有就看看这周有没有新的质量异常。"
+→ 第一步结果决定第二步动作
+→ 测什么: 动态决策，非预编程路径
+```
+
+### 4.2 新指标
+
+| 旧指标 | 新指标 | 说明 |
+|--------|--------|------|
+| 路由准确率 | **删除** | 没有 Supervisor 了 |
+| 工具 Jaccard | **必要工具覆盖率** | expected_tools 改必要集+可选集，只比对必要集 |
+| 无 | **任务完成率**（新增） | 评判最终回答是否满足用户需求 |
+| 平均步数 | **步数分布** | 简单题 1-2 步、复杂题 3-5 步 |
+| 崩溃率 | **崩溃率** | 不变 |
+| 工具执行成功率 | **工具执行成功率** | 保留 |
+
+### 4.3 expected_tools 新格式
+
+```json
+{
+    "id": "M01",
+    "question": "找出紧急设备故障工单，涉及的设备型号有哪些，有没有历史维修方案",
+    "category": "multi-hop",
+    "difficulty": "hard",
+    "required_tools": ["query_tickets_tool", "search_solutions_tool"],
+    "optional_tools": ["get_schema_tool", "execute_sql_tool"],
+    "min_steps": 3,
+    "max_steps": 6
+}
 ```
 
 ---
 
-## 八、面试准备（项目完成后）
+## 五、实施步骤
 
-资源：`_zero2Agent/learn-agent-interview.txt`（蚂蚁/阿里/字节/腾讯 Agent 面试 15 大维度）
+| # | 步骤 | 内容 |
+|---|------|------|
+| 1 | 新建 agent_loop.py | AgentLoop 类 + TaskState + Observation + ContextManager + StopDecision |
+| 2 | 重写 prompts.py | 4 个角色 Prompt → 1 个 AGENT_PROMPT |
+| 3 | 简化 graph.py | 5 节点 → 2 节点（agent + tool_executor） |
+| 4 | 删除旧节点 + agent.py | nodes/ 全目录 + 旧 agent.py |
+| 5 | 前端适配 | _create_stream 适配新 Event 类型 |
+| 6 | 评测集重写 | 新 50 题（A类15 + B类25 + C类10） |
+| 7 | 跑评测 | `judge.py -n 50 --seed 42`，对比改前基线 |
+| 8 | RAG 回归 | `bench_rag.py`，确认 RAG 指标不变 |
 
-**必问 5 题（能答深）**：Agent vs Chatbot 区别、为什么单 Agent 替代多 Agent、RAG 双通道为什么更好、工具调用失败处理、沙箱安全
+### 不变模块
 
-**了解但诚实说没做**：Memory 架构、Context Engine、Multi-Agent 协作
+- `tools.py` — 12 工具 + 断路器 + 重试 + 超时 + 沙箱
+- `rag.py` — ChromaDB + FTS5 双通道 RRF
+- `database.py` — SQLite 13 表 + 种子数据
+- `mcp_server.py` — MCP stdio 服务
+- `scheduler.py` — 定时告警
+- `config.py` / `logger.py` — 基础设施
 
 ---
 
-## 九、简历条目
+## 六、面试定位
 
-> **AgentForge — 闭环 Agent 执行框架** (2026.04-2026.06)
-> - 实现 Agent Loop 核心循环(while(hasToolCalls))，注入 Plan-Act-Observe-Reflect 执行模式
-> - 双通道混合检索（ChromaDB 向量 + SQLite FTS5 → RRF 融合），消融实验置信度提升 10.5%
-> - 自研 Python 沙箱（AST 分离 + 临时目录隔离），防 prompt injection
-> - 工具编排层：12 工具 + 断路器熔断 + 指数退避重试 + per-tool 超时，0 崩溃
-> - 50 题自动化评测：Jaccard 工具匹配 + 执行成功率 + 多步任务完成率
+**两个强项 + 一个亮点：**
+
+| 角色 | 模块 | 面试能说什么 |
+|------|------|------------|
+| 强项 1 | RAG 检索 | 双通道 ChromaDB+FTS5 → RRF 融合，消融实验置信度提升 10.5% |
+| 强项 2 | 工具安全 | 12 工具 + 断路器熔断 + 指数退避重试 + Python 沙箱隔离 |
+| 亮点 | Agent Loop | while(hasToolCalls) + Plan-Act-Observe-Reflect |
+
+**必答题："为什么从多 Agent 改成单 Agent？"**
+
+> zero2Agent Basic 08 的判断：大多数项目的多 Agent 只是"把 Prompt 拆成几份"。LineMind 的 4-Agent 共享同一个 LLM、同一个执行循环、同一个状态，本质是多角色 Prompt。单 Agent 有更集中的状态管理、更容易调试、行为更可预测。多 Agent 只在真正需要上下文隔离或并行执行时才值得引入——这个项目还没到那个复杂度。
+
+**了解但诚实说没做：** Memory 架构、Context Engine、SubAgent 派生、多渠道路由
+
+---
+
+## 七、学习资源
+
+- [zero2Agent](https://onefly.top/zero2Agent/) — Agent 工程完整教程（离线: `E:\develop\claude\面试准备\_zero2Agent\`）
+- [Anthropic Harness Design](https://www.anthropic.com/engineering/harness-design-long-running-apps)
+- [pi-mono](https://github.com/badlogic/pi-mono) — TypeScript Agent Loop 参考实现
