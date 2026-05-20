@@ -1099,10 +1099,7 @@ def _create_stream(user_input: str, chat_history_raw: list):
     _error: list[Exception] = []
 
     NODE_LABEL = {
-        "supervisor": "分析意图...",
-        "query_agent": "Query Agent 查询中...",
-        "analyze_agent": "Analyze Agent 分析中...",
-        "knowledge_agent": "Knowledge Agent 检索中...",
+        "agent": "Agent 分析中...",
         "tool_executor": "执行工具...",
     }
 
@@ -1206,10 +1203,7 @@ if prompt:
                 # 渲染可折叠 thinking 区域
                 thinking = metadata.get("thinking", {})
                 thinking_order = metadata.get("thinking_order", [])
-                NODE_CN = {
-                    "supervisor": "路由分析", "query_agent": "Query Agent",
-                    "analyze_agent": "Analyze Agent", "knowledge_agent": "Knowledge Agent",
-                }
+                NODE_CN = {"agent": "Agent 推理"}
                 for node in thinking_order:
                     text = thinking.get(node, "")
                     if text.strip():
