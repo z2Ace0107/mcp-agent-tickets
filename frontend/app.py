@@ -951,7 +951,7 @@ for idx, msg in enumerate(st.session_state.chat_history):
     msg_time = msg.get("time", "")
 
     with st.chat_message(role):
-        st.markdown(convert_markdown_table(content))
+        st.markdown(content)
         if role == "assistant":
             render_charts_from_steps(msg.get("steps", []))
         if st.session_state.show_timestamps and msg_time:
