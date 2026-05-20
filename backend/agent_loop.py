@@ -128,11 +128,11 @@ def _observe_tool_result(
         obs.is_valid = False
         return obs
 
-    # 检查重复
-    prev_calls = [h for h in state.tool_call_history if h["tool_name"] == tool_name]
-    if prev_calls:
-        prev_args = prev_calls[-1].get("args", {})
-        current_args = state.tool_call_history[-1].get("args", {}) if state.tool_call_history else {}
+    # 检查重复：与上一次同工具调用比较（不含本次）
+    same_tool_history = [h for h in state.tool_call_history if h["tool_name"] == tool_name]
+    if len(same_tool_history) >= 2:
+        prev_args = same_tool_history[-2].get("args", {})
+        current_args = same_tool_history[-1].get("args", {})
         if prev_args == current_args:
             obs.is_duplicate = True
             obs.summary = f"工具 {tool_name} 用相同的参数重复调用了，结果可能没有变化"
