@@ -195,17 +195,48 @@ def _data_sufficient(state: TaskState) -> bool:
 
 
 def _should_stop(
-    response: AIMessage, observations: list[Observation], state: TaskState
-) -> bool:
-    """多维退出判断。"""
+    response: AIMessage, observations: list[Observation], state: TaskState,
+    max_iterations: int = MAX_ITERATIONS, verbose: bool = False,
+) -> tuple[bool, str]:
+    """多维退出判断。返回 (是否退出, 原因)。
+
+    1. LLM 没调工具 → Agent 认为任务完成
+    2. 达到迭代上限 → 强制结束
+    3. 陷入循环 → 连续多次同工具同参数
+    4. 数据充足 → 足够有效调用可回答问题（仅在 verbose 模式记录，不强制退出）
+    """
+    # 条件 1：LLM 主动结束
     if not response.tool_calls:
-        return True
-    if state.iterations >= MAX_ITERATIONS:
-        return True
+        reason = "LLM 未调用工具，Agent 判定任务完成"
+        if verbose:
+            logger.info(f"[StopDecision] {reason} | 迭代: {state.iterations}")
+        return True, reason
+
+    # 条件 2：迭代上限
+    if state.iterations >= max_iterations:
+        reason = f"达到迭代上限 ({state.iterations}/{max_iterations})，强制结束"
+        if verbose:
+            logger.info(f"[StopDecision] {reason} | 工具: {[tc.get('name','') for tc in response.tool_calls]}")
+        return True, reason
+
+    # 条件 3：陷入循环
     if _check_stuck(state):
-        logger.info("[agent_loop] 检测到重复调用循环，强制结束")
-        return True
-    return False
+        last_3 = [h["tool_name"] for h in state.tool_call_history[-3:]]
+        reason = f"陷入循环: 连续 {len(last_3)} 次调用同一工具 {last_3[0]}"
+        if verbose:
+            logger.info(f"[StopDecision] {reason} | 历史: {last_3}")
+        return True, reason
+
+    # 条件 4：数据充足（仅记录，不作为强制退出条件）
+    if _data_sufficient(state) and verbose:
+        valid = sum(1 for h in state.tool_call_history if not h.get("has_error"))
+        logger.info(f"[StopDecision] 数据可能充足 ({valid} 次有效调用)，但 LLM 仍可继续")
+
+    if verbose:
+        tools = [tc.get("name", "") for tc in response.tool_calls]
+        logger.info(f"[StopDecision] 继续执行 | 迭代: {state.iterations}/{max_iterations} | 本轮工具: {tools}")
+
+    return False, "继续"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -264,11 +295,13 @@ class AgentLoop:
         tools: list[Any],
         execute_tool: Callable[[str, dict, dict], tuple[str, dict]],
         max_iterations: int = MAX_ITERATIONS,
+        verbose: bool = False,
     ):
         self.llm = llm
         self.tools = tools
         self._execute_tool_fn = execute_tool
         self.max_iterations = max_iterations
+        self.verbose = verbose
         self._tool_names = [t.name for t in tools]
 
     def _build_system_prompt(self, state: TaskState, observation_text: str) -> str:
@@ -365,10 +398,13 @@ class AgentLoop:
             # ── 无工具调用 → Agent 认为完成了 ─────────────────
             if not response.tool_calls:
                 state.mark_done()
+                if self.verbose:
+                    logger.info(f"[StopDecision] LLM 未调用工具，任务完成 | 迭代: {state.iterations}")
                 yield {
                     "type": "done",
                     "output": response.content or "",
                     "steps": intermediate_steps,
+                    "stop_reason": "agent_finished",
                 }
                 return
 
@@ -439,13 +475,17 @@ class AgentLoop:
             state.mark_step_complete(f"第{state.iterations + 1}轮: {len(response.tool_calls)}个工具")
 
             # ── 退出判断 ────────────────────────────────────
-            if _should_stop(response, observations, state):
+            should_stop, stop_reason = _should_stop(
+                response, observations, state, self.max_iterations, self.verbose
+            )
+            if should_stop:
                 final = await self._generate_final_answer(messages)
                 state.mark_done()
                 yield {
                     "type": "done",
                     "output": final,
                     "steps": intermediate_steps,
+                    "stop_reason": stop_reason,
                 }
                 return
 
@@ -458,4 +498,5 @@ class AgentLoop:
             "type": "done",
             "output": final,
             "steps": intermediate_steps,
+            "stop_reason": f"max_iterations ({self.max_iterations})",
         }

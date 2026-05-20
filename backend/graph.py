@@ -227,8 +227,11 @@ async def run_graph(
     """v5.0: AgentLoop 自循环运行，返回最终结果。"""
     logger.info(f"[graph] 开始: '{user_input[:60]}...'")
 
+    settings = get_settings()
+    verbose = settings.LOG_LEVEL.upper() == "DEBUG"
+
     llm = _create_llm()
-    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool)
+    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool, verbose=verbose)
 
     start_time = time.time()
     circuit_state: dict[str, int] = {}
@@ -263,8 +266,11 @@ async def run_graph_stream(
     """v5.0: AgentLoop 流式运行，转发事件给前端。"""
     logger.info(f"[graph:stream] 开始: '{user_input[:60]}...'")
 
+    settings = get_settings()
+    verbose = settings.LOG_LEVEL.upper() == "DEBUG"
+
     llm = _create_llm()
-    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool)
+    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool, verbose=verbose)
 
     start_time = time.time()
     circuit_state: dict[str, int] = {}
