@@ -1,148 +1,8 @@
-# LineMind v4.0
+# LineMind
 
-**LangGraph 驱动的工业多智能体协管平台** — 从 MVP 单 ReAct Agent 演进为 5 Agent Supervisor 架构，集成 MCP 协议、流式输出、自动化评测。
+**LangGraph 驱动的工单智能助手** — Agent 闭环执行框架。
 
-> *[GIF: 打字提问 → 流式输出 + 图表生成]*
-
-## 架构
-
-```mermaid
-graph TB
-    subgraph FRONTEND[" 前端层 — Streamlit "]
-        direction TB
-        UI["深色主题 UI<br/>幽灵卡片 · 820px 阅读宽度"]
-        STREAM["st.write_stream 流式渲染<br/>进度标签 + 逐 token 输出"]
-        CHARTS["图表渲染<br/>matplotlib → base64 → Image"]
-        SIDEBAR["侧边栏工具箱<br/>告警徽标 · 对话历史 · 实时监控 · 日报"]
-    end
-
-    subgraph AGENT[" Agent 编排层 — LangGraph StateGraph "]
-        direction TB
-        SUP["supervisor_node<br/>快捷拦截「你好」→ 跳过 LLM<br/>LLM(t=0) 意图分类 → 路由分发"]
-        Q["Query Agent（6工具）<br/>query_tickets · execute_sql<br/>get_schema · get_detail<br/>update_status · assign"]
-        A["Analyze Agent（3工具）<br/>analyze_tickets<br/>execute_python<br/>recommend_tickets"]
-        K["Knowledge Agent（3工具）<br/>search_solutions<br/>web_search · get_detail"]
-        REP["Reporter<br/>数据优先结构化回复<br/>execute_python 图表生成<br/>逐 token 流式输出"]
-        SUP --> Q & A & K
-        Q & A & K --> REP
-    end
-
-    subgraph SAFETY[" 安全与执行层 "]
-        direction TB
-        EXEC["tool_executor_node"]
-        TIMEOUT["超时控制<br/>10s 常规 / 30s 联网"]
-        RETRY["指数退避重试<br/>200ms → 400ms → 800ms"]
-        CB["熔断降级<br/>连续 3 次失败自动熔断"]
-        GUARD["只读 SQL 守卫<br/>查询场景禁止写操作"]
-    end
-
-    subgraph TOOLS[" MCP 工具层 — 12 工具 · JSON-RPC 2.0 stdio "]
-        direction LR
-        T1["查询: query_tickets<br/>get_detail · get_schema"]
-        T2["分析: analyze_tickets<br/>recommend · execute_python"]
-        T3["操作: update_status<br/>assign · add_reply"]
-        T4["知识: search_solutions<br/>web_search"]
-        T5["数据: execute_sql"]
-    end
-
-    subgraph RAG[" RAG 检索层 "]
-        CHROMA["ChromaDB 向量检索<br/>阿里百炼 text-embedding-v3"]
-        FTS["FTS5 全文索引（规划中）<br/>工单编号 · 设备型号 · 术语"]
-        RRF["RRF 融合排序（规划中）<br/>双通道共识自动胜出"]
-        CHROMA --> FTS --> RRF
-    end
-
-    subgraph DATA[" 数据层 — SQLite 13 表星型 Schema "]
-        direction LR
-        FACTS["事实表<br/>tickets · quality_metrics<br/>ticket_replies"]
-        DIMS["维度表<br/>equipment · production_lines<br/>materials"]
-        META["元数据表<br/>conversations · messages<br/>agent_actions"]
-    end
-
-    subgraph EVAL[" 评测层 "]
-        direction TB
-        TEST["50 题测试集<br/>query / analyze / knowledge<br/>action / multi-hop / chat"]
-        JUDGE["规则判定<br/>路由准确率 · 工具选择率<br/>崩溃率"]
-        COMPARE["版本对比<br/>v2.0 → v3.2 → v4.0"]
-        TEST --> JUDGE --> COMPARE
-    end
-
-    UI --> STREAM
-    STREAM --> REP
-    Q & A & K --> EXEC
-    EXEC --> TIMEOUT --> RETRY --> CB
-    GUARD -.-> EXEC
-    EXEC --> T1 & T2 & T3 & T4 & T5
-    T1 & T5 --> FACTS
-    K --> T4
-    K --> CHROMA
-    SUP --> EVAL
-```
-
-## 相比传统 ReAct Agent 的核心优化
-
-传统做法是单 Agent 绑定所有工具，靠 prompt 规则硬撑。LineMind 在每个环节做了针对性改进：
-
-### 1. 两级路由，而不是一把梭
-
-```
-传统:    用户输入 → ReAct Agent(12工具) → 输出
-                     ↑ 工具多了 LLM 容易选错
-
-LineMind: 用户输入 → 预处理(t=0分类+改写) → Supervisor(二级路由) → 专职Agent(3-6工具) → Reporter → 输出
-                     ↑ 闲聊直接拦截，省60% Token       ↑ 每个Agent只看自己职责内的工具
-```
-
-**效果**：路由准确率从无路由 → 74% → **90%**（50 题评测）。
-
-### 2. 工具子集分组，而不是全量绑定
-
-12 个工具的 function description 全塞进一个 prompt，模型容易在"查工单"和"分析工单"之间混淆。LineMind 按职责分组：
-
-| Agent | 工具数 | 职责 |
-|-------|:---:|------|
-| Query | 6 | 工单查询 / SQL / Schema 探索 / 状态更新 / 分配 / 详情 |
-| Analyze | 3 | 统计分析 / Python 图表 / 智能推荐 |
-| Knowledge | 3 | RAG 方案检索 / 联网搜索 / 工单详情 |
-| Reporter | 1 | Python 图表生成 |
-
-每个 Agent 只看到 3-6 个工具，**工具混淆率大幅降低**。
-
-### 3. 三层安全防护，而不只是 try-catch
-
-```
-超时控制（10s，联网 30s）
-  → 指数退避重试（200ms → 400ms → 800ms）
-    → 连续 3 次失败自动熔断 + 优雅降级
-```
-
-外加**只读 SQL 守卫**：查询类场景禁止调用 assign/update 等写操作。50 题评测 **0 崩溃**。
-
-### 4. 自动化评测，而不是"我感觉好了"
-
-50 题测试集覆盖 6 类场景，每次改动跑分验证。路由 74% → 88% → 90%，**每个版本都有数字说话**。
-
-### 5. 流式双通道，而不是等全文生成
-
-`stream_mode=["updates", "messages"]`：updates 通道推送节点进度，messages 通道推送 Reporter 逐 token 输出。用户不用盯着空白页面等。
-
----
-
-## 与 DevQuest 的技术复用
-
-DevQuest（开发者经验库 MCP 服务）是 MCP + ChromaDB + LangChain 技术栈的**实验田**，LineMind 是其经验直接复用到业务场景的产物：
-
-| 复用内容 | DevQuest（实验田） | LineMind（本项目的应用） |
-|----------|---------------------|--------------------------|
-| MCP Server 标准化 | 11 个工具，JSON-RPC 2.0 stdio | 12 个工具，同一套模式 |
-| ChromaDB + Embedding | 向量语义检索通道（阿里百炼） | RAG `search_solutions`，同方案 |
-| 混合检索 | 语义 + FTS5 关键词双通道 RRF 融合 | 同架构思路，向量 + SQL 结构化联合查询 |
-| LangChain 工具模式 | `@tool` 装饰器 + `bind_tools()` | 相同的工具定义和绑定模式 |
-| 工具描述设计经验 | 总结出 description 怎么写 LLM 才选得准 | 12 个工具全部遵循同一设计规范 |
-
-两个项目共同构成"Agent 开发 → 经验沉淀 → 复用迭代"的闭环。
-
----
+> 当前版本处于架构升级期。详见 [PLAN.md](PLAN.md)。
 
 ## 快速开始
 
@@ -152,74 +12,55 @@ cp .env.example .env   # 填入 DEEPSEEK_API_KEY
 streamlit run frontend/app.py
 ```
 
-## 能力矩阵
+浏览器打开 http://localhost:8501。
 
-| 能力 | v2.0 (MVP) | v3.2 | v4.0 |
-|------|:---:|:---:|:---:|
-| 工单 CRUD | ✅ | ✅ | ✅ |
-| RAG 方案检索 | ✅ | ✅ | ✅ |
-| 意图路由 | ❌ | ✅ 74% | ✅ **90%** |
-| SQL 复杂查询 | ❌ | ❌ | ✅ |
-| Python 沙箱图表 | ❌ | ❌ | ✅ |
-| Schema 探索 | ❌ | ❌ | ✅ |
-| 安全熔断 | ❌ | ❌ | ✅ |
-| 流式输出 | ❌ | ❌ | ✅ |
+## 能力
 
-## 自动化评测
-
-50 题测试集，覆盖 6 类场景。每次改动量化验证，数据驱动迭代。
-
-```bash
-# 日常快速迭代（10 题，~4min）
-python eval/judge.py -n 10 --seed 42
-
-# 发版全量（50 题，~30min）
-python eval/judge.py -n 50 -o eval/report.json
-```
-
-### 版本演进数据
-
-| | v2.0 (MVP) | v3.2 | v4.0 |
-|------|:---:|:---:|:---:|
-| 路由准确率 | — | 74% | **90%** |
-| 工具选择率 | 80% | 82% | **80%** |
-| MCP 工具数 | 9 | 9 | **12** |
-| Agent 数 | 1 (ReAct) | 1 (ReAct) | **5 (Supervisor)** |
+| 能力 | 状态 |
+|------|:---:|
+| 工单查询/筛选/详情 | ✅ |
+| 统计分析 + 图表（Plotly/Matplotlib） | ✅ |
+| RAG 方案检索（双通道：向量 + FTS5） | ✅ |
+| 工单操作（分配/更新/回复） | ✅ |
+| SQL 查询 + Schema 探索 | ✅ |
+| 智能推荐 + 日报 | ✅ |
+| 安全熔断 + 重试 + 沙箱 | ✅ |
+| 流式输出 | ✅ |
+| Agent 多步执行闭环 | 🔨 开发中 |
+| 评测（50 题） | ✅ |
 
 ## 技术栈
 
 | 层级 | 技术 |
 |:---|:---|
-| Agent 框架 | LangGraph（StateGraph + 条件路由 + 流式） |
+| Agent 框架 | LangGraph |
 | LLM | DeepSeek（OpenAI 兼容） |
 | 工具协议 | MCP（JSON-RPC 2.0 over stdio） |
 | 向量检索 | ChromaDB + 阿里百炼 text-embedding-v3 |
-| 前端 | Streamlit（流式输出 + 深色主题） |
+| 前端 | Streamlit 流式输出 |
 | 数据库 | SQLite（13 表星型 Schema） |
-| 评测 | 50 题测试集 + 规则判定 |
-| 日志 | Python logging + RotatingFileHandler |
+| 评测 | 50 题测试集 + 全客观指标 |
 
 ## 项目结构
 
 ```
 linemind/
 ├── backend/
-│   ├── graph.py          # LangGraph 状态图 + 流式输出
-│   ├── agent.py          # Agent 入口
-│   ├── tools.py          # 12 个 MCP 工具
-│   ├── prompts.py        # 系统提示词
-│   ├── database.py       # SQLite + 种子数据
-│   ├── rag.py            # ChromaDB 混合检索
-│   ├── config.py         # 配置管理
-│   ├── scheduler.py      # 主动监控告警
-│   ├── mcp_server.py     # MCP stdio 服务器
-│   └── nodes/            # 5 个 Agent 节点
+│   ├── agent_loop.py      ← Agent 核心循环（开发中）
+│   ├── tools.py           ← 12 工具 + 断路器 + 沙箱
+│   ├── rag.py             ← RAG 双通道检索
+│   ├── graph.py           ← LangGraph 状态图
+│   ├── database.py        ← SQLite + 种子数据
+│   ├── config.py / logger.py / scheduler.py
+│   └── mcp_server.py      ← MCP stdio 服务
 ├── frontend/
-│   └── app.py            # Streamlit 流式 UI
+│   └── app.py             ← Streamlit UI
 ├── eval/
-│   ├── judge.py          # 自动化评测脚本
-│   └── test_queries.json # 50 题测试集
-└── data/
+│   ├── judge.py           ← 评测脚本
+│   └── test_queries.json  ← 50 题评测集
+├── AGENTS.md              ← Claude 开发入口
+├── PLAN.md                ← 完整优化计划
+└── CHANGELOG.md           ← 版本记录
 ```
 
 ## License
