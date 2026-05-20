@@ -22,17 +22,6 @@ from backend.scheduler import check_urgent_alerts, get_cached_alerts, generate_r
 # 常量
 # ============================================================
 
-ROUTE_LABELS = {
-    "query_agent":     ("🔍", "Query 查询", "#4ADE80"),
-    "analyze_agent":   ("📊", "Analyze 分析", "#C084FC"),
-    "knowledge_agent": ("📚", "Knowledge 检索", "#F59E0B"),
-    "END":             ("💬", "直接回复", "#93C5FD"),
-}
-INTENT_LABELS = {
-    "query": "查询工单", "analyze": "统计分析",
-    "knowledge": "知识检索", "chat": "闲聊",
-}
-
 TOOL_CN_MAP = {
     "query_tickets_tool":       "工单查询",
     "analyze_tickets_tool":     "工单分析",
@@ -463,43 +452,15 @@ def _table_to_kv(lines: list[str]) -> str:
 
 
 def render_reAct_steps(msg: dict):
-    """渲染推理步骤面板 — v3.0: 含步骤 0 预处理 + 工具耗时/裁剪标记。"""
+    """v5.0: 渲染 Agent 工具调用步骤。"""
     steps = msg.get("steps", [])
-    route = msg.get("route", "")
-    intent = msg.get("intent", "")
-    rewritten = msg.get("rewritten_query", "")
 
-    # 无步骤且无路由信息时直接返回
-    if not steps and not route:
+    if not steps:
         return
 
-    # 面板标题
     step_count = len(steps)
-    if route == "chat":
-        title_parts = ["推理过程（💬 直接回复）"]
-    elif step_count == 0:
-        title_parts = ["推理过程（0 步）"]
-    else:
-        title_parts = [f"推理过程（{step_count} 步）"]
-
     expanded = st.session_state.get("auto_expand_react", False)
-    with st.expander("  ".join(title_parts), expanded=expanded):
-        # ---- 步骤 0: 预处理结果 ----
-        if route and route != "chat":
-            route_icon, route_label, route_color = ROUTE_LABELS.get(route, ("", route, "#8B8B8B"))
-            intent_cn = INTENT_LABELS.get(intent, intent)
-            st.markdown(
-                f'<span style="display:inline-flex;align-items:center;gap:6px;font-size:0.82rem;color:{route_color};">'
-                f'{route_icon} <b>步骤 0</b> — 意图识别</span>',
-                unsafe_allow_html=True,
-            )
-            st.caption(f"意图：{intent_cn}　|　路由：{route_icon} {route_label}")
-            if rewritten:
-                st.caption(f"改写：{rewritten[:120]}{'...' if len(rewritten) > 120 else ''}")
-            if steps:
-                st.divider()
-
-        # ---- 工具步骤 ----
+    with st.expander(f"推理过程（{step_count} 步）", expanded=expanded):
         for si, step in enumerate(steps, 1):
             tool_name = step.get("action", "unknown")
             tool_cn = TOOL_CN_MAP.get(tool_name, tool_name)
@@ -994,18 +955,7 @@ for idx, msg in enumerate(st.session_state.chat_history):
         if role == "assistant":
             render_charts_from_steps(msg.get("steps", []))
         if st.session_state.show_timestamps and msg_time:
-            # 路由徽标
-            route = msg.get("route", "")
-            if route:
-                icon, label, color = ROUTE_LABELS.get(route, ("", route, "#8B8B8B"))
-                st.markdown(
-                    f'<span style="font-size:0.68rem;color:{color};margin-right:6px;">'
-                    f'{icon} {label}</span>'
-                    f'<span style="font-size:0.7rem;color:#6B7280;">{msg_time}</span>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.caption(msg_time)
+            st.caption(msg_time)
 
         if role == "assistant":
             # 操作按钮行
@@ -1157,9 +1107,6 @@ def _create_stream(user_input: str, chat_history_raw: list):
                 elif value["type"] == "done":
                     metadata["output"] = value["output"]
                     metadata["steps"] = value["intermediate_steps"]
-                    metadata["route"] = value["route"]
-                    metadata["intent"] = value["intent"]
-                    metadata["rewritten_query"] = value.get("rewritten_query", "")
                     if not has_tokens:
                         yield value["output"]
 
@@ -1189,8 +1136,6 @@ if prompt:
     if not HAS_API_KEY and not st.session_state.api_key_set:
         response_text = "请点击 ⚙️ 设置输入 DeepSeek API Key。"
         steps = []
-        route = intent = rewritten = ""
-        context_info = None
         with st.chat_message("assistant"):
             st.markdown(response_text)
     else:
@@ -1200,28 +1145,11 @@ if prompt:
             with st.chat_message("assistant"):
                 st.write_stream(text_stream)
 
-                # 渲染可折叠 thinking 区域
-                thinking = metadata.get("thinking", {})
-                thinking_order = metadata.get("thinking_order", [])
-                NODE_CN = {"agent": "Agent 推理"}
-                for node in thinking_order:
-                    text = thinking.get(node, "")
-                    if text.strip():
-                        label = NODE_CN.get(node, node)
-                        with st.expander(f"🧠 {label} 推理过程", expanded=False):
-                            st.markdown(text)
-
             response_text = metadata.get("output", "")
             steps = metadata.get("steps", [])
-            route = metadata.get("route", "")
-            intent = metadata.get("intent", "")
-            rewritten = metadata.get("rewritten_query", "")
-            context_info = None
         except Exception as e:
             response_text = f"执行出错：{str(e)}"
             steps = []
-            route = intent = rewritten = ""
-            context_info = None
             with st.chat_message("assistant"):
                 st.markdown(response_text)
 
@@ -1232,8 +1160,7 @@ if prompt:
     })
     st.session_state.chat_history.append({
         "role": "assistant", "content": response_text, "time": now_assist,
-        "steps": steps, "route": route, "intent": intent,
-        "rewritten_query": rewritten, "context_info": context_info,
+        "steps": steps,
     })
 
     save_current_conversation()
