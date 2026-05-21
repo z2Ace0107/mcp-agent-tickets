@@ -334,15 +334,26 @@ class AgentLoop:
         return msgs
 
     async def _generate_final_answer(self, messages: list) -> str:
-        """调 LLM（不带工具）生成最终答案。"""
+        """调 LLM（不带工具）生成最终答案。失败时回退到消息中提取。"""
         try:
-            final_messages = list(messages) + [SystemMessage(content=FINAL_ANSWER_PROMPT)]
+            final_messages = list(messages)
+            # 裁剪过长的工具结果，避免上下文溢出
+            final_messages = _compress_messages(final_messages, keep_recent=10)
+            final_messages.append(SystemMessage(content=FINAL_ANSWER_PROMPT))
             final_llm = self.llm.bind_tools(self.tools, tool_choice="none")
             response = await final_llm.ainvoke(final_messages)
-            return response.content or ""
+            if response.content and response.content.strip():
+                return response.content.strip()
         except Exception as e:
             logger.error(f"生成最终答案失败: {e}")
-            return "抱歉，生成回复时遇到问题，请重试。"
+
+        # 回退：从最近的 AIMessage 提取内容
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and not msg.tool_calls:
+                content = msg.content or ""
+                if content.strip():
+                    return content.strip()
+        return "抱歉，生成回复时遇到问题，请重试。"
 
     async def run(
         self,
@@ -428,9 +439,26 @@ class AgentLoop:
                     "args": tool_args,
                 }
 
-                result_str, meta = self._execute_tool_fn(
-                    tool_name, tool_args, circuit_state
-                )
+                # ── 程序化守卫：防止重复调用一次性工具 ──────────
+                once_only_tools = {"search_solutions_tool", "web_search_tool"}
+                if tool_name in once_only_tools:
+                    same_calls = [h for h in state.tool_call_history
+                                  if h["tool_name"] == tool_name]
+                    if len(same_calls) >= 1:
+                        result_str = json.dumps({
+                            "error": f"工具 {tool_name} 已调用过，禁止重复搜索。"
+                                     f"请使用已有结果直接回答，不要再调用此工具。",
+                            "blocked": True,
+                        }, ensure_ascii=False)
+                        meta = {"elapsed": 0, "retries": 0, "degraded": False, "tool_name": tool_name, "blocked": True}
+                    else:
+                        result_str, meta = self._execute_tool_fn(
+                            tool_name, tool_args, circuit_state
+                        )
+                else:
+                    result_str, meta = self._execute_tool_fn(
+                        tool_name, tool_args, circuit_state
+                    )
                 truncated = _truncate_tool_result(result_str)
 
                 tool_msgs.append(
