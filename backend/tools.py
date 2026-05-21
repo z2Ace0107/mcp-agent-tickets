@@ -466,3 +466,33 @@ def execute_python(code: str) -> dict[str, Any]:
                 _shutil.rmtree(_sandbox_tmpdir, ignore_errors=True)
             except Exception:
                 pass
+
+
+# ═══════════════════════════════════════════════════════════════
+# v5.1 新增: 知识库检索工具
+# ═══════════════════════════════════════════════════════════════
+
+
+def search_equipment_manual(query: str) -> dict:
+    """搜索设备手册。支持设备编号(如CNC-MC-003)、型号(如DMG MORI)、
+    故障码(如E01/ERR-14)、症状关键词(如主轴异响/温控异常)。
+
+    Returns:
+        {"query": str, "results": [...], "count": int}
+        每个result包含设备信息、规格、故障码、保养规程、常见问题等。
+    """
+    from backend.knowledge_base import search_equipment_manual as _search
+    return _search(query)
+
+
+def query_inspection_records(equipment_id: str, days: int = 30) -> dict:
+    """查询设备最近N天巡检记录。返回逐日检查项目+是否异常标记(✓/⚠/✗)。
+
+    equipment_id: 设备编号(必填), 如 CNC-MC-003, IM-06, EQP-006
+    days: 查询天数(默认30)
+
+    Returns:
+        {"equipment_id": str, "days": int, "records": [...], "count": int, "summary": str}
+    """
+    from backend.knowledge_base import query_inspection_records as _query
+    return _query(equipment_id, days)

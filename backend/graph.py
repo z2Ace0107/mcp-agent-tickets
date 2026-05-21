@@ -23,6 +23,8 @@ from backend.tools import (
     get_schema,
     execute_sql,
     execute_python,
+    search_equipment_manual,
+    query_inspection_records,
 )
 from backend.agent_loop import AgentLoop
 from backend.config import get_settings
@@ -113,11 +115,25 @@ def execute_python_tool(code: str) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
+@tool
+def search_equipment_manual_tool(query: str) -> str:
+    """搜索设备手册。支持设备编号(CNC-MC-003)、型号(DMG MORI)、故障码(E01/ERR-14)、症状关键词(主轴异响/温控异常)。返回设备规格、故障码含义、保养规程、常见问题。"""
+    result = search_equipment_manual(query=query)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+@tool
+def query_inspection_records_tool(equipment_id: str, days: int = 30) -> str:
+    """查询设备最近N天巡检记录。equipment_id: 设备编号必填; days: 天数默认30。返回逐日检查项+异常标记(✓/⚠/✗) + 统计摘要。"""
+    result = query_inspection_records(equipment_id=equipment_id, days=days)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
 ALL_TOOLS = [
     query_tickets_tool, analyze_tickets_tool, update_ticket_status_tool,
     assign_ticket_tool, add_ticket_reply_tool, get_ticket_detail_tool,
     search_solutions_tool, recommend_tickets_tool, web_search_tool,
     get_schema_tool, execute_sql_tool, execute_python_tool,
+    search_equipment_manual_tool, query_inspection_records_tool,
 ]
 
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}
