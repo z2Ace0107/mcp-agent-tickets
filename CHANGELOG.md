@@ -4,6 +4,42 @@
 
 ---
 
+## v5.1 (进行中 — 2026-05-21)
+
+### 计划
+- **Phase 1**: 数据 & 环境扩展（33→80+ 工单 + 知识库 + 2 新工具）
+- **Phase 2**: Context Engine（消息分层 + 轮次压缩 + Compaction）
+- **Phase 3**: Agent 稳定性（工具限频分级 + Turn State 重置）
+- **Phase 4**: 评测重写（50 题：A 15 / B 20 / C 15）
+- **Phase 5**: 前端优化（回答消失 + ReAct 美化）
+- **Phase 6**: 文档更新 + 全量回归
+
+---
+
+## v5.0 (2026-05-21)
+
+### 新增
+- **Agent Loop 核心循环**: `agent_loop.py` — Plan → Act → Observe → Reflect
+- **StopDecision 退出判断**: 4 维退出（LLM 主动结束 / 迭代上限 / 陷入循环 / 数据充足）
+- **Observation 程序化检查**: error / empty / duplicate / valid 四态
+- **ContextManager**: 上下文超预算时自动裁剪早期消息
+- **程序化工具守卫**: search_solutions / web_search 各只执行一次
+- **`test_agent_loop.py`**: 3 项核心测试（退出判断 / 单步 / 多步）
+
+### 增强
+- **prompts.py**: 4 角色 Prompt → 1 个 AGENT_PROMPT（含 4 铁则）
+- **graph.py**: 5 节点 StateGraph → AgentLoop 驱动，删除路由函数和工具子集
+- **前端**: 移除 ROUTE_LABELS / INTENT_LABELS / 路由徽标 / 步骤 0 意图识别
+- **上下文污染修复**: 当前问题作为 HumanMessage 放在消息列表最后
+
+### 移除
+- **nodes/ 全目录**: supervisor / query / analyze / knowledge 节点
+- **旧 agent.py**: 精简为薄壳转发
+- **旧 Prompt**: SUPERVISOR / QUERY / ANALYZE / KNOWLEDGE 全部移除
+- **convert_markdown_table**: 保留原生 Markdown 表格渲染
+
+---
+
 ## v4.0 (2026-05-18)
 
 ### 新增

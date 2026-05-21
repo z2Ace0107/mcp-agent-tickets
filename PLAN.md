@@ -273,39 +273,75 @@ AGENT_PROMPT = """你是 LineMind 智能工单助手。你有 12 个工具。
 
 ---
 
-## 五、实施步骤
+## 五、v5.0 实施步骤
 
-| # | 步骤 | 内容 |
-|---|------|------|
-| 1 | 新建 agent_loop.py | AgentLoop 类 + TaskState + Observation + ContextManager + StopDecision |
-| 2 | 重写 prompts.py | 4 个角色 Prompt → 1 个 AGENT_PROMPT |
-| 3 | 简化 graph.py | 5 节点 → 2 节点（agent + tool_executor） |
-| 4 | 删除旧节点 + agent.py | nodes/ 全目录 + 旧 agent.py |
-| 5 | 前端适配 | _create_stream 适配新 Event 类型 |
-| 6 | 评测集重写 | 新 50 题（A类15 + B类25 + C类10） |
-| 7 | 跑评测 | `judge.py -n 50 --seed 42`，对比改前基线 |
-| 8 | RAG 回归 | `bench_rag.py`，确认 RAG 指标不变 |
-
-### 不变模块
-
-- `tools.py` — 12 工具 + 断路器 + 重试 + 超时 + 沙箱
-- `rag.py` — ChromaDB + FTS5 双通道 RRF
-- `database.py` — SQLite 13 表 + 种子数据
-- `mcp_server.py` — MCP stdio 服务
-- `scheduler.py` — 定时告警
-- `config.py` / `logger.py` — 基础设施
+| # | 步骤 | 状态 |
+|---|------|:---:|
+| 1 | 新建 agent_loop.py — AgentLoop 类 + TaskState + Observation + ContextManager + StopDecision | ✅ |
+| 2 | 重写 prompts.py — 4 角色 Prompt → 1 个 AGENT_PROMPT | ✅ |
+| 3 | 简化 graph.py — 5 节点 → AgentLoop 驱动 | ✅ |
+| 4 | 删除旧节点 — nodes/ 全目录 + 旧 agent.py + 旧 Prompt | ✅ |
+| 5 | 前端适配 — 移除路由徽标、意图识别、死字段 | ✅ |
+| 6 | 评测集重写 — 新 50 题（A类15 + B类20 + C类15） | → v5.1 Phase 4 |
+| 7 | 跑评测 — `judge.py -n 50 --seed 42` | → v5.1 Phase 6 |
+| 8 | RAG 回归 — `bench_rag.py` | → v5.1 Phase 6 |
 
 ---
 
-## 六、面试定位
+## 六、v5.1 优化计划
+
+> v5.0 测试暴露了三层缺失：数据量不够探索、无 Context Engine、只有 Prompt 软约束。
+> v5.1 的核心思路：**数据先行 → 架构适配 → 评测验证**。
+
+### 6.1 实施顺序
+
+| Phase | 内容 | 优先级 | 说明 |
+|-------|------|:---:|------|
+| 1 | **数据 & 环境扩展** | P0 | 33→80+ 工单 + 知识库（设备手册/SOP/巡检）+ 2 新工具 |
+| 2 | **Context Engine** | P0 | 消息分层 + 轮次边界压缩 + 回合内 Compaction。参数基于 Phase 1 实际数据测量 |
+| 3 | **Agent 稳定性** | P1 | 工具限频分级 + Turn State 重置 |
+| 4 | **评测重写** | P1 | 50 题（A 15 / B 20 / C 15）+ 任务完成率新指标 |
+| 5 | **前端优化** | P2 | 回答消失修复 + ReAct 面板美化 |
+| 6 | **文档 + 回归** | P1 | CHANGELOG/AGENTS 更新 + 全量测试 |
+
+### 6.2 核心设计
+
+**Context Engine（Phase 2）：**
+- 三层消息组装：SystemPrompt → History Digest → Current Turn
+- 轮次边界：历史 long assistant 回复压缩为信息骨架（截前 N 字 + 标记）
+- 压缩参数通过跑 benchmark 测量确定，不预设值
+
+**数据扩展（Phase 1）：**
+- 新增 6 条根因链工单（同一设备反复故障的追溯路径）
+- 新增 8 条跨部门联动工单（设备→产线→物料连锁）
+- 新增知识库（5 台设备手册 + 6 项 SOP + 60 条巡检记录）
+- 新增 2 工具：search_equipment_manual、query_inspection_records
+
+**评测（Phase 4）：**
+- A 类 15 题：单步直达（测"知道何时停"）
+- B 类 20 题：多步推理（测 Plan-Act-Observe-Reflect 全链路）
+- C 类 15 题：动态决策（第一步结果决定第二步，非预编程路径）
+
+### 6.3 不变模块
+
+- `tools.py` — 现有 12 工具（只新增不修改）
+- `rag.py` — ChromaDB + FTS5 双通道 RRF
+- `database.py` — 现有 13 表（只加数据不改 Schema）
+- `mcp_server.py` / `scheduler.py` / `config.py` / `logger.py`
+
+---
+
+## 七、面试定位
 
 **两个强项 + 一个亮点：**
 
 | 角色 | 模块 | 面试能说什么 |
 |------|------|------------|
 | 强项 1 | RAG 检索 | 双通道 ChromaDB+FTS5 → RRF 融合，消融实验置信度提升 10.5% |
-| 强项 2 | 工具安全 | 12 工具 + 断路器熔断 + 指数退避重试 + Python 沙箱隔离 |
-| 亮点 | Agent Loop | while(hasToolCalls) + Plan-Act-Observe-Reflect |
+| 强项 2 | 工具安全 | 14 工具 + 断路器熔断 + 指数退避重试 + Python 沙箱 + 程序化限频 |
+| 亮点 | Agent Loop | while(hasToolCalls) + Plan-Act-Observe-Reflect + StopDecision |
+| 新增 | Context Engine | 三层消息组装 + 轮次边界压缩 + 回合内 Compaction |
+| 新增 | 知识库 | 设备手册 + SOP + 巡检记录 + 专用检索工具 |
 
 **必答题："为什么从多 Agent 改成单 Agent？"**
 
