@@ -316,9 +316,11 @@ class AgentLoop:
     def _build_initial_messages(
         self, goal: str, history: list[dict[str, str]] | None
     ) -> list:
+        """构建初始消息列表。当前用户问题作为 HumanMessage 放在最后，
+        确保 LLM 以当前问题为准，不被历史上下文带偏。"""
         msgs: list = []
         if history:
-            for m in history[-8:]:
+            for m in history[-6:]:
                 role = m.get("role", "")
                 content = m.get("content", "")
                 if not content:
@@ -327,6 +329,8 @@ class AgentLoop:
                     msgs.append(HumanMessage(content=content))
                 elif role == "assistant":
                     msgs.append(AIMessage(content=content))
+        # 当前用户输入必须放在最后，这是成熟 Agent 的通用做法
+        msgs.append(HumanMessage(content=goal))
         return msgs
 
     async def _generate_final_answer(self, messages: list) -> str:
