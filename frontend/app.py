@@ -953,6 +953,11 @@ for idx, msg in enumerate(st.session_state.chat_history):
     msg_time = msg.get("time", "")
 
     with st.chat_message(role):
+        if role == "assistant":
+            thinking = msg.get("thinking", "")
+            if thinking:
+                with st.expander("💭 思考过程", expanded=False):
+                    st.markdown(thinking)
         st.markdown(content)
         if role == "assistant":
             render_charts_from_steps(msg.get("steps", []))
@@ -1067,6 +1072,7 @@ def _create_stream(user_input: str, chat_history_raw: list):
 
     def text_gen():
         has_tokens = False
+        thinking_parts = []
         while True:
             kind, value = result_queue.get()
             if kind == "error":
@@ -1075,7 +1081,9 @@ def _create_stream(user_input: str, chat_history_raw: list):
                 break
             if kind == "event":
                 if value["type"] == "progress":
-                    yield f"> {value['label']}\n\n"
+                    text = f"> {value['label']}\n\n"
+                    thinking_parts.append(text)
+                    yield text
                 elif value["type"] == "token":
                     has_tokens = True
                     yield value["content"]
@@ -1084,6 +1092,7 @@ def _create_stream(user_input: str, chat_history_raw: list):
                     metadata["steps"] = value["intermediate_steps"]
                     if not has_tokens:
                         yield value["output"]
+        metadata["thinking_text"] = "".join(thinking_parts).strip()
 
     return text_gen(), metadata
 
@@ -1133,8 +1142,11 @@ if prompt:
     st.session_state.chat_history.append({
         "role": "user", "content": prompt, "time": now_str, "steps": [],
     })
+    thinking_text = metadata.get("thinking_text", "") if metadata else ""
     st.session_state.chat_history.append({
-        "role": "assistant", "content": response_text, "time": now_assist,
+        "role": "assistant", "content": response_text,
+        "thinking": thinking_text,
+        "time": now_assist,
         "steps": steps,
     })
 

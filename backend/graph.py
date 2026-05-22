@@ -138,7 +138,7 @@ def execute_python_tool(code: str) -> str:
 
 @tool
 def search_equipment_manual_tool(query: str) -> str:
-    """搜索设备手册。支持设备编号(CNC-MC-003)、型号(DMG MORI)、故障码(E01/ERR-14)、症状关键词(主轴异响/温控异常)。返回设备规格、故障码含义、保养规程、常见问题。"""
+    """搜索设备手册+SOP检查清单。支持设备编号(CNC-MC-003)、型号(DMG MORI)、故障码(E01/ERR-14)、症状关键词(主轴异响/温控异常)、SOP名称(安全光幕校验/淬火工艺参数/动平衡校验)。返回设备规格、故障码含义、保养规程、常见问题、SOP检查步骤。"""
     result = search_equipment_manual(query=query)
     return json.dumps(result, ensure_ascii=False, indent=2)
 

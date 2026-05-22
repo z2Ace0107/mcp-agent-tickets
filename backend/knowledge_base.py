@@ -355,7 +355,39 @@ def search_equipment_manual(query: str) -> dict:
                 if len(results) >= 3:
                     break
 
+    # ── 搜索 SOP 检查清单 ──────────────────────────────────
+    for sop_name, sop_info in SOP_CHECKLISTS.items():
+        if _sop_matches(sop_name, sop_info, query):
+            results.append(_format_sop_entry(sop_name, sop_info))
+            if len(results) >= 5:
+                break
+
     return {"query": query, "results": results, "count": len(results)}
+
+
+def _sop_matches(name: str, info: dict, query: str) -> bool:
+    """判断 SOP 是否与查询匹配。"""
+    if name in query:
+        return True
+    if info.get("code", "").lower() in query.lower():
+        return True
+    for step in info.get("步骤", []):
+        if any(kw in step for kw in query.split()):
+            return True
+    return False
+
+
+def _format_sop_entry(name: str, info: dict) -> dict:
+    return {
+        "match_type": "sop",
+        "sop_name": name,
+        "code": info.get("code", ""),
+        "周期": info.get("周期", ""),
+        "责任人": info.get("责任人", ""),
+        "步骤": info.get("步骤", []),
+        "标准": info.get("标准", ""),
+        "异常处理": info.get("异常处理", ""),
+    }
 
 
 def query_inspection_records(equipment_id: str, days: int = 30) -> dict:
