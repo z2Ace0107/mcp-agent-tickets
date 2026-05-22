@@ -4,6 +4,7 @@ langchain
 langchain-openai
 openai
 streamlit
+plotly
 mcp
 python-dotenv
 chromadb

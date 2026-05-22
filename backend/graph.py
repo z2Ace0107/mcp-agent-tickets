@@ -34,7 +34,28 @@ logger = get_logger(__name__)
 
 
 # ============================================================
-# 12 个 LangChain 工具
+# 工具中文名映射
+# ============================================================
+
+TOOL_CN_MAP = {
+    "query_tickets_tool": "工单查询",
+    "analyze_tickets_tool": "工单分析",
+    "update_ticket_status_tool": "更新状态",
+    "assign_ticket_tool": "分配处理人",
+    "add_ticket_reply_tool": "添加回复",
+    "get_ticket_detail_tool": "工单详情",
+    "search_solutions_tool": "检索方案",
+    "recommend_tickets_tool": "智能推荐",
+    "web_search_tool": "联网搜索",
+    "get_schema_tool": "查看Schema",
+    "execute_sql_tool": "执行SQL",
+    "execute_python_tool": "执行Python",
+    "search_equipment_manual_tool": "设备手册",
+    "query_inspection_records_tool": "巡检记录",
+}
+
+# ============================================================
+# 14 个 LangChain 工具
 # ============================================================
 
 @tool
@@ -315,7 +336,7 @@ async def run_graph_stream(
             yield {
                 "type": "progress",
                 "node": "tool_executor",
-                "label": f"执行工具: {event['tool_name']}",
+                "label": f"执行工具: {TOOL_CN_MAP.get(event['tool_name'], event['tool_name'])}（{event['tool_name']}）",
                 "steps": steps,
                 "route": "",
                 "intent": "",

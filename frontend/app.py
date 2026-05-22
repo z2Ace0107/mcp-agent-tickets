@@ -35,6 +35,8 @@ TOOL_CN_MAP = {
     "get_schema_tool":          "查看Schema",
     "execute_sql_tool":         "执行SQL",
     "execute_python_tool":      "执行Python",
+    "search_equipment_manual_tool": "设备手册",
+    "query_inspection_records_tool": "巡检记录",
 }
 
 DEMO_SCENARIOS = {
@@ -483,7 +485,7 @@ def render_reAct_steps(msg: dict):
                     'background:rgba(245,158,11,0.1);padding:0px 5px;border-radius:4px;">已裁剪</span>'
                 )
             st.markdown(
-                f"**步骤 {si}** — {tool_cn}{status_html}",
+                f"**步骤 {si}** — {tool_cn}（`{tool_name}`）{status_html}",
                 unsafe_allow_html=True,
             )
 
@@ -1048,11 +1050,6 @@ def _create_stream(user_input: str, chat_history_raw: list):
     metadata: dict = {}
     _error: list[Exception] = []
 
-    NODE_LABEL = {
-        "agent": "Agent 分析中...",
-        "tool_executor": "执行工具...",
-    }
-
     async def _stream():
         try:
             async for event in run_agent_stream(user_input, chat_history):
@@ -1068,40 +1065,18 @@ def _create_stream(user_input: str, chat_history_raw: list):
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
-    thinking_nodes: dict[str, str] = {}  # node → full thinking text
-    thinking_node_order: list[str] = []
-
     def text_gen():
-        nonlocal thinking_nodes, thinking_node_order
         has_tokens = False
-        current_thinking = ""
         while True:
             kind, value = result_queue.get()
             if kind == "error":
                 raise _error[0] if _error else RuntimeError("Stream error")
             if kind == "done":
-                if current_thinking:
-                    thinking_nodes[current_thinking] = thinking_nodes.get(current_thinking, "")
-                metadata["thinking"] = thinking_nodes
-                metadata["thinking_order"] = thinking_node_order
                 break
             if kind == "event":
-                if value["type"] == "thinking":
-                    node = value.get("node", "")
-                    if node and node not in thinking_node_order:
-                        thinking_node_order.append(node)
-                        current_thinking = node
-                        yield f"\n\n💭 *{NODE_LABEL.get(node, node)} 推理中...*\n\n"
-                    thinking_nodes[node] = thinking_nodes.get(node, "") + value["content"]
-                elif value["type"] == "progress":
-                    if current_thinking:
-                        thinking_nodes[current_thinking] = thinking_nodes.get(current_thinking, "")
-                        current_thinking = ""
+                if value["type"] == "progress":
                     yield f"> {value['label']}\n\n"
                 elif value["type"] == "token":
-                    if current_thinking:
-                        thinking_nodes[current_thinking] = thinking_nodes.get(current_thinking, "")
-                        current_thinking = ""
                     has_tokens = True
                     yield value["content"]
                 elif value["type"] == "done":
