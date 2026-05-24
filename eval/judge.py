@@ -127,9 +127,11 @@ async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dic
             result = await run_agent(user_input=question)
             elapsed_ms = round((time.perf_counter() - t0) * 1000)
             steps = result.get("intermediate_steps", [])
+            trace_id = result.get("trace_id", "")
 
             score = score_result(test, steps)
             score["elapsed_ms"] = elapsed_ms
+            score["trace_id"] = trace_id
             results.append(score)
 
             status = "PASS" if score["required_pass"] else "WARN"
@@ -227,6 +229,7 @@ async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dic
             "tool_errors": errs,
             "suspicious_tool_calls": suspicious_total,
             "step_distribution": step_dist,
+            "traced_runs": sum(1 for r in valid if r.get("trace_id")),
         },
         "by_category": {
             c: {
@@ -270,6 +273,8 @@ def print_report(report: dict):
           f"1-2: {s['step_distribution']['1-2']}  "
           f"3-5: {s['step_distribution']['3-5']}  "
           f"6+: {s['step_distribution']['6+']}")
+    if s.get("traced_runs"):
+        print(f"  \u5df2\u8bb0\u5f55 Trace       {s['traced_runs']} \u6761")
     print()
 
     print(f"  {'\u7c7b\u522b':12s} {'\u9898':>3s} {'\u5fc5\u8981\u8986\u76d6':>10s} {'\u5b8c\u6210\u5ea6':>7s} {'\u6b65\u6570':>5s} {'\u8017\u65f6':>6s}")
