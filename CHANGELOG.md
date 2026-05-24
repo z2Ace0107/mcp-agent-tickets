@@ -6,10 +6,29 @@
 
 ## v5.1 (进行中 — 2026-05-21)
 
+### Phase 1: 数据 & 环境扩展 ✅
+- **种子数据**: 33→61 条工单（含 6 根因链 + 8 跨部门联动 + 5 模糊描述 + 4 方案对比）
+- **知识库**: 5 设备手册 + 6 SOP 检查清单 + 22 条巡检记录
+- **新工具**: `search_equipment_manual`, `query_inspection_records`
+- **TOOL_CN_MAP**: 14 工具中文名映射
+- **plotly 依赖**添加
+- **思考过程持久化**: 流式显示 → rerun 后折叠到 expander
+
+### Phase 2: Context Engine ✅ (2026-05-23)
+- **_assemble_context**: 三层消息组装（History Digest + 轮次边界压缩 + Current Turn）
+- **_compact_tool_results**: 回合内工具结果压缩，超预算时替换最早 ToolMessage
+- **参数**: `HISTORY_COMPRESS_THRESHOLD=600`, `HISTORY_KEEP_CHARS=300`, `CONTEXT_BUDGET=12000`
+- **跨问题上下文污染修复**: 历史长回复截取 + [已压缩] 标记，边界 SystemMessage 分隔
+
+### Phase 3: Agent 稳定性 ✅ (2026-05-24)
+- **TOOL_CALL_LIMITS**: 工具调用分级限频表（8 个受限 + 6 个不限），按 PLAN.md 设计
+- **动态工具移除**: 工具达上限后从 `bind_tools()` + 系统提示中物理移除，LLM 无法看到/调用
+- **每轮工具上限**: `MAX_TOOLS_PER_ROUND=2`，单轮超限直接返回 blocked ToolMessage
+- **工具名验证**: 虚构工具名返回 "不存在 + 正确工具列表"，LLM 可自我纠正
+- **AGENT_PROMPT 强化**: 铁则新增 2 条（每轮上限 + 只调可用工具），效率规则提升为铁则
+- **删除**: 旧 `once_only_tools` 硬编码集合，替换为 `TOOL_CALL_LIMITS` 字典
+
 ### 计划
-- **Phase 1**: 数据 & 环境扩展（33→80+ 工单 + 知识库 + 2 新工具）
-- **Phase 2**: Context Engine（消息分层 + 轮次压缩 + Compaction）
-- **Phase 3**: Agent 稳定性（工具限频分级 + Turn State 重置）
 - **Phase 4**: 评测重写（50 题：A 15 / B 20 / C 15）
 - **Phase 5**: 前端优化（回答消失 + ReAct 美化）
 - **Phase 6**: 文档更新 + 全量回归

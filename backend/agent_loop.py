@@ -32,6 +32,21 @@ logger = get_logger(__name__)
 MAX_ITERATIONS = 8
 CONTEXT_BUDGET = 12000  # 字符，超过则触发压缩
 KEEP_RECENT = 6  # 压缩时保留最近 N 条消息原文
+MAX_HISTORY_MSGS = 6  # 历史对话保留条数
+HISTORY_COMPRESS_THRESHOLD = 600  # assistant 回复超过此字符数触发截取
+HISTORY_KEEP_CHARS = 300  # 截取后保留的最小信息量
+MAX_TOOLS_PER_ROUND = 2  # 单轮最多执行的工具数
+
+TOOL_CALL_LIMITS = {
+    "search_solutions_tool": 1,
+    "web_search_tool": 1,
+    "search_equipment_manual_tool": 2,
+    "query_inspection_records_tool": 3,
+    "get_ticket_detail_tool": 4,
+    "analyze_tickets_tool": 2,
+    "execute_python_tool": 2,
+    "execute_sql_tool": 5,
+}
 
 # ═══════════════════════════════════════════════════════════════
 # TaskState
@@ -304,34 +319,73 @@ class AgentLoop:
         self.verbose = verbose
         self._tool_names = [t.name for t in tools]
 
-    def _build_system_prompt(self, state: TaskState, observation_text: str) -> str:
+    def _build_system_prompt(self, state: TaskState, observation_text: str, available_tool_names: list[str] | None = None) -> str:
+        names = available_tool_names if available_tool_names is not None else self._tool_names
         return AGENT_PROMPT.format(
-            tools="\n".join(f"- **{n}**" for n in self._tool_names),
+            tools="\n".join(f"- **{n}**" for n in names),
+            max_tools_per_round=MAX_TOOLS_PER_ROUND,
             goal=state.goal,
             completed=", ".join(state.completed_steps) if state.completed_steps else "（无）",
             status=state.status,
             observation=observation_text if observation_text else "（首次执行，无上轮观察）",
         )
 
-    def _build_initial_messages(
+    def _assemble_context(
         self, goal: str, history: list[dict[str, str]] | None
     ) -> list:
-        """构建初始消息列表。当前用户问题作为 HumanMessage 放在最后，
-        确保 LLM 以当前问题为准，不被历史上下文带偏。"""
+        """三层消息组装（Phase 2 Context Engine）。
+
+        Layer 1 (SystemMessage) 由 run() 中 _build_system_prompt 单独处理。
+        Layer 2: History Digest — 历史对话的信息骨架，长回复截取 + 边界标记。
+        Layer 3: Current Turn — 当前用户问题放在最后，确保 LLM 以当前问题为准。
+        """
         msgs: list = []
+        history_msgs: list = []
         if history:
-            for m in history[-6:]:
+            for m in history[-MAX_HISTORY_MSGS:]:
                 role = m.get("role", "")
                 content = m.get("content", "")
                 if not content:
                     continue
                 if role == "user":
-                    msgs.append(HumanMessage(content=content))
+                    history_msgs.append(HumanMessage(content=content))
                 elif role == "assistant":
-                    msgs.append(AIMessage(content=content))
-        # 当前用户输入必须放在最后，这是成熟 Agent 的通用做法
+                    if len(content) > HISTORY_COMPRESS_THRESHOLD:
+                        compressed = (
+                            content[:HISTORY_KEEP_CHARS]
+                            + f"\n\n[已压缩 {len(content)} 字符历史回复]"
+                        )
+                        history_msgs.append(AIMessage(content=compressed))
+                    else:
+                        history_msgs.append(AIMessage(content=content))
+        if history_msgs:
+            msgs.append(SystemMessage(content="[以下为历史对话摘要]"))
+            msgs.extend(history_msgs)
         msgs.append(HumanMessage(content=goal))
         return msgs
+
+    def _compact_tool_results(self, messages: list) -> list:
+        """回合内工具结果压缩。超 CONTEXT_BUDGET 时替换最早的 ToolMessage。
+
+        保护规则：跳过 SystemMessage，保留最近 KEEP_RECENT 条消息原文。
+        递归执行直到总字符数回到预算内。
+        """
+        total = sum(len(str(m.content)) for m in messages if hasattr(m, "content"))
+        if total <= CONTEXT_BUDGET:
+            return messages
+
+        protected_end = max(0, len(messages) - KEEP_RECENT)
+        for i, msg in enumerate(messages):
+            if i >= protected_end:
+                break
+            if isinstance(msg, ToolMessage):
+                messages[i] = ToolMessage(
+                    content="[工具结果已裁剪]",
+                    tool_call_id=msg.tool_call_id,
+                )
+                return self._compact_tool_results(messages)
+
+        return messages
 
     async def _generate_final_answer(self, messages: list) -> str:
         """调 LLM（不带工具）生成最终答案。失败时回退到消息中提取。"""
@@ -376,10 +430,11 @@ class AgentLoop:
             circuit_state = {}
 
         state = TaskState(goal=goal)
-        messages = self._build_initial_messages(goal, history)
+        messages = self._assemble_context(goal, history)
         observation_text = ""
         intermediate_steps: list[dict[str, Any]] = []
         _last_response: AIMessage | None = None
+        used_tools: dict[str, int] = {}
 
         yield {
             "type": "plan",
@@ -387,14 +442,21 @@ class AgentLoop:
         }
 
         while state.iterations < self.max_iterations:
+            # ── 动态工具列表：已达上限的工具从 LLM 视野中移除 ───
+            available_tools = [
+                t for t in self.tools
+                if used_tools.get(t.name, 0) < TOOL_CALL_LIMITS.get(t.name, float("inf"))
+            ]
+            available_tool_names = [t.name for t in available_tools]
+
             # ── 上下文压缩 ──────────────────────────────────
             messages = _compress_messages(messages)
 
             # ── Act: 调 LLM ─────────────────────────────────
             system = SystemMessage(
-                content=self._build_system_prompt(state, observation_text)
+                content=self._build_system_prompt(state, observation_text, available_tool_names)
             )
-            llm_with_tools = self.llm.bind_tools(self.tools)
+            llm_with_tools = self.llm.bind_tools(available_tools)
             prompt_messages = [system] + messages
 
             try:
@@ -428,7 +490,7 @@ class AgentLoop:
             observations: list[Observation] = []
             tool_metas: list[dict] = []
 
-            for tc in response.tool_calls:
+            for i, tc in enumerate(response.tool_calls):
                 tool_name = tc.get("name", "")
                 tool_args = tc.get("args", {})
                 tool_call_id = tc.get("id", "")
@@ -439,26 +501,33 @@ class AgentLoop:
                     "args": tool_args,
                 }
 
-                # ── 程序化守卫：防止重复调用一次性工具 ──────────
-                once_only_tools = {"search_solutions_tool", "web_search_tool"}
-                if tool_name in once_only_tools:
-                    same_calls = [h for h in state.tool_call_history
-                                  if h["tool_name"] == tool_name]
-                    if len(same_calls) >= 1:
-                        result_str = json.dumps({
-                            "error": f"工具 {tool_name} 已调用过，禁止重复搜索。"
-                                     f"请使用已有结果直接回答，不要再调用此工具。",
-                            "blocked": True,
-                        }, ensure_ascii=False)
-                        meta = {"elapsed": 0, "retries": 0, "degraded": False, "tool_name": tool_name, "blocked": True}
-                    else:
-                        result_str, meta = self._execute_tool_fn(
-                            tool_name, tool_args, circuit_state
-                        )
+                # ── 守卫 1: 每轮上限（最多 MAX_TOOLS_PER_ROUND 个）─
+                if i >= MAX_TOOLS_PER_ROUND:
+                    result_str = json.dumps({
+                        "error": f"本轮工具调用数超限（最多{MAX_TOOLS_PER_ROUND}个/轮），此调用已跳过。请分步执行。",
+                        "blocked": True,
+                    }, ensure_ascii=False)
+                    meta = {"elapsed": 0, "retries": 0, "degraded": False, "tool_name": tool_name, "blocked": True, "reason": "round_limit"}
+                # ── 守卫 2: 工具名验证 ──────────────────────────
+                elif tool_name not in available_tool_names:
+                    result_str = json.dumps({
+                        "error": f"工具 '{tool_name}' 不存在。可用工具: {', '.join(available_tool_names)}",
+                        "blocked": True,
+                    }, ensure_ascii=False)
+                    meta = {"elapsed": 0, "retries": 0, "degraded": False, "tool_name": tool_name, "blocked": True, "reason": "invalid_name"}
+                # ── 守卫 3: 工具调用上限（TOOL_CALL_LIMITS）────
+                elif used_tools.get(tool_name, 0) >= TOOL_CALL_LIMITS.get(tool_name, float("inf")):
+                    result_str = json.dumps({
+                        "error": f"工具 {tool_name} 已达调用上限，禁止重复调用。请使用已有结果直接回答。",
+                        "blocked": True,
+                    }, ensure_ascii=False)
+                    meta = {"elapsed": 0, "retries": 0, "degraded": False, "tool_name": tool_name, "blocked": True, "reason": "tool_limit"}
+                # ── 正常执行 ──────────────────────────────────
                 else:
                     result_str, meta = self._execute_tool_fn(
                         tool_name, tool_args, circuit_state
                     )
+                    used_tools[tool_name] = used_tools.get(tool_name, 0) + 1
                 truncated = _truncate_tool_result(result_str)
 
                 tool_msgs.append(
@@ -503,6 +572,9 @@ class AgentLoop:
             # ── Reflect: 追加工具消息到对话 ──────────────────
             messages.append(response)
             messages.extend(tool_msgs)
+
+            # ── Context Engine: 回合内工具结果压缩 ───────────
+            messages = self._compact_tool_results(messages)
 
             state.mark_step_complete(f"第{state.iterations + 1}轮: {len(response.tool_calls)}个工具")
 
