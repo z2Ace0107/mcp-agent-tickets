@@ -328,15 +328,13 @@ def search_solutions(query: str, n_results: int = 3) -> dict[str, Any]:
         }
     """
     collection = get_collection()
-
-    if collection.count() == 0:
-        return {"query": query, "results": [], "message": "暂无已解决工单可参考，请先运行索引"}
-
-    rewritten = _rewrite_query(query)
     fetch_k = n_results * 3
+    rewritten = _rewrite_query(query)
 
-    # ── 通道一: 向量语义检索 ──────────────────────────────────
-    chroma_results = collection.query(query_texts=[rewritten], n_results=fetch_k)
+    # ── 通道一: 向量语义检索（collection 空时跳过）───────────
+    vector_results = []
+    if collection.count() > 0:
+        chroma_results = collection.query(query_texts=[rewritten], n_results=fetch_k)
 
     vector_results = []
     if chroma_results["documents"] and chroma_results["documents"][0]:
