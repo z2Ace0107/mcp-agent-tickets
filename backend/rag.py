@@ -124,7 +124,12 @@ def index_solved_tickets() -> int:
         for t in tickets
     ]
 
-    collection.add(documents=documents, ids=ids, metadatas=metadatas)
+    batch_size = 10
+    for i in range(0, len(documents), batch_size):
+        batch_docs = documents[i : i + batch_size]
+        batch_ids = ids[i : i + batch_size]
+        batch_metas = metadatas[i : i + batch_size]
+        collection.add(documents=batch_docs, ids=batch_ids, metadatas=batch_metas)
 
     # ── FTS5 全文索引 ─────────────────────────────────────────
     _rebuild_fts(tickets)
