@@ -920,11 +920,13 @@ with st.sidebar:
             conn.execute("DELETE FROM agent_actions")
             conn.execute("DELETE FROM sql_templates")
             conn.execute("DELETE FROM db_schema_info")
+            conn.execute("DELETE FROM agent_trace_steps")
+            conn.execute("DELETE FROM agent_traces")
             conn.commit()
             conn.close()
             reinit_db()
             start_new_conversation()
-            st.success("已重置全部 12 张表")
+            st.success("已重置全部 14 张表")
             time.sleep(0.5)
             st.rerun()
         if st.button("🗑️ 清空历史", use_container_width=True):
@@ -1093,6 +1095,7 @@ def _create_stream(user_input: str, chat_history_raw: list):
                 elif value["type"] == "done":
                     metadata["output"] = value["output"]
                     metadata["steps"] = value["intermediate_steps"]
+                    metadata["trace_id"] = value.get("trace_id", "")
                     if not has_tokens:
                         yield value["output"]
         metadata["thinking_text"] = "".join(thinking_parts).strip()
@@ -1151,6 +1154,7 @@ if prompt:
         "thinking": thinking_text,
         "time": now_assist,
         "steps": steps,
+        "trace_id": metadata.get("trace_id", "") if metadata else "",
     })
 
     save_current_conversation()

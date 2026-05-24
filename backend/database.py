@@ -26,6 +26,79 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def save_agent_trace(
+    trace_id: str,
+    question: str,
+    total_steps: int,
+    total_iterations: int,
+    stop_reason: str,
+    final_answer_length: int,
+    total_latency_ms: int,
+    context_compressed: int,
+    context_total_messages: int,
+    go_quota_exhausted: int,
+    steps: list[dict],
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO agent_traces (trace_id, question, created_at, total_steps,
+            total_iterations, stop_reason, final_answer_length, total_latency_ms,
+            context_compressed, context_total_messages, go_quota_exhausted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (trace_id, question, datetime.now().isoformat(), total_steps,
+             total_iterations, stop_reason, final_answer_length, total_latency_ms,
+             context_compressed, context_total_messages, go_quota_exhausted),
+        )
+        for step in steps:
+            conn.execute(
+                """INSERT INTO agent_trace_steps (trace_id, step_index, tool_name,
+                tool_args, observation_verdict, observation_summary, elapsed_ms,
+                has_error, result_preview)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (trace_id, step["step_index"], step["tool_name"],
+                 step.get("tool_args", "{}"), step.get("observation_verdict", "ok"),
+                 step.get("observation_summary", ""), step.get("elapsed_ms", 0),
+                 step.get("has_error", 0), step.get("result_preview", "")),
+            )
+        conn.commit()
+        logger.debug(f"[trace] 已保存 trace={trace_id}, steps={len(steps)}")
+    except Exception as e:
+        logger.error(f"[trace] 保存失败: {e}")
+    finally:
+        conn.close()
+
+
+def list_agent_traces(limit: int = 50) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM agent_traces ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_agent_trace(trace_id: str) -> dict | None:
+    conn = get_connection()
+    try:
+        trace = conn.execute(
+            "SELECT * FROM agent_traces WHERE trace_id = ?", (trace_id,)
+        ).fetchone()
+        if not trace:
+            return None
+        steps = conn.execute(
+            "SELECT * FROM agent_trace_steps WHERE trace_id = ? ORDER BY step_index",
+            (trace_id,),
+        ).fetchall()
+        result = dict(trace)
+        result["steps"] = [dict(s) for s in steps]
+        return result
+    finally:
+        conn.close()
+
+
 def init_db(db_path: str | None = None) -> None:
     """初始化数据库：建表 + 首次空库时自动填充种子数据。
 
@@ -120,6 +193,36 @@ def init_db(db_path: str | None = None) -> None:
                 defect_rate REAL DEFAULT 0,
                 rework_hours REAL DEFAULT 0,
                 FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
+            );
+
+            -- v5.1 Agentic Tracing
+            CREATE TABLE IF NOT EXISTS agent_traces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id TEXT UNIQUE NOT NULL,
+                question TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                total_steps INTEGER DEFAULT 0,
+                total_iterations INTEGER DEFAULT 0,
+                stop_reason TEXT DEFAULT '',
+                final_answer_length INTEGER DEFAULT 0,
+                total_latency_ms INTEGER DEFAULT 0,
+                context_compressed INTEGER DEFAULT 0,
+                context_total_messages INTEGER DEFAULT 0,
+                go_quota_exhausted INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_trace_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id TEXT NOT NULL,
+                step_index INTEGER NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_args TEXT DEFAULT '{}',
+                observation_verdict TEXT DEFAULT 'ok',
+                observation_summary TEXT DEFAULT '',
+                elapsed_ms INTEGER DEFAULT 0,
+                has_error INTEGER DEFAULT 0,
+                result_preview TEXT DEFAULT '',
+                FOREIGN KEY (trace_id) REFERENCES agent_traces(trace_id)
             );
         """)
         # 兼容旧数据库：添加 FK 列 + 新表（不影响已有数据）

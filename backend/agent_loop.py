@@ -13,9 +13,13 @@ while(hasToolCalls) 循环 — 检测到工具调用时继续执行并回调 LLM
 from __future__ import annotations
 
 import json
+import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncGenerator, Callable
+
+from backend.database import save_agent_trace
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -451,6 +455,12 @@ class AgentLoop:
         if circuit_state is None:
             circuit_state = {}
 
+        trace_id = str(uuid.uuid4())[:8]
+        trace_start = time.time()
+        trace_steps: list[dict] = []
+        trace_compressed = 0
+        trace_total_msgs = 0
+
         state = TaskState(goal=goal)
         messages = self._assemble_context(goal, history)
         observation_text = ""
@@ -461,6 +471,7 @@ class AgentLoop:
         yield {
             "type": "plan",
             "steps": ["理解问题", "收集数据", "分析/检索", "输出答案"],
+            "trace_id": trace_id,
         }
 
         while state.iterations < self.max_iterations:
@@ -486,12 +497,18 @@ class AgentLoop:
             except Exception as e:
                 if self._is_quota_error(e):
                     logger.warning(f"Go API 额度耗尽: {e}")
+                    _save_trace(trace_id, goal, len(intermediate_steps), state.iterations,
+                                "quota_exhausted", 0, int((time.time() - trace_start) * 1000),
+                                trace_compressed, trace_total_msgs, 1, trace_steps)
                     yield {
                         "type": "quota_exhausted",
                         "message": "OpenCode Go API 额度已用完，请联系管理员切换到直连 DeepSeek API 后再试。"
                     }
                     return
                 logger.error(f"LLM 调用失败: {e}")
+                _save_trace(trace_id, goal, len(intermediate_steps), state.iterations,
+                            "llm_error", 0, int((time.time() - trace_start) * 1000),
+                            trace_compressed, trace_total_msgs, 0, trace_steps)
                 yield {"type": "error", "message": f"LLM 调用失败: {str(e)}"}
                 return
 
@@ -506,11 +523,15 @@ class AgentLoop:
                 state.mark_done()
                 if self.verbose:
                     logger.info(f"[StopDecision] LLM 未调用工具，任务完成 | 迭代: {state.iterations}")
+                _save_trace(trace_id, goal, 0, 0, "agent_finished",
+                            len(response.content or ""), int((time.time() - trace_start) * 1000),
+                            trace_compressed, trace_total_msgs, 0, trace_steps)
                 yield {
                     "type": "done",
                     "output": response.content or "",
                     "steps": intermediate_steps,
                     "stop_reason": "agent_finished",
+                    "trace_id": trace_id,
                 }
                 return
 
@@ -589,6 +610,17 @@ class AgentLoop:
                 }
                 intermediate_steps.append(step)
 
+                trace_steps.append({
+                    "step_index": len(trace_steps),
+                    "tool_name": tool_name,
+                    "tool_args": json.dumps(tool_args, ensure_ascii=False),
+                    "observation_verdict": obs.verdict,
+                    "observation_summary": obs.summary,
+                    "elapsed_ms": int(meta.get("elapsed", 0) * 1000),
+                    "has_error": 1 if obs.has_error else 0,
+                    "result_preview": obs.result_preview[:500] if obs.result_preview else "",
+                })
+
                 yield {"type": "step", **step}
 
             # ── Reflect: 构建观察文本注入下一轮 prompt ────────
@@ -614,22 +646,57 @@ class AgentLoop:
             if should_stop:
                 final = await self._generate_final_answer(messages)
                 state.mark_done()
+                _save_trace(trace_id, goal, len(intermediate_steps), state.iterations,
+                            stop_reason, len(final), int((time.time() - trace_start) * 1000),
+                            trace_compressed, trace_total_msgs, 0, trace_steps)
                 yield {
                     "type": "done",
                     "output": final,
                     "steps": intermediate_steps,
                     "stop_reason": stop_reason,
+                    "trace_id": trace_id,
                 }
                 return
 
             state.iterations += 1
 
+            if not trace_compressed:
+                total_chars = sum(len(str(m.content)) for m in messages if hasattr(m, "content"))
+                if total_chars > CONTEXT_BUDGET:
+                    trace_compressed = 1
+            trace_total_msgs = len([m for m in messages if isinstance(m, (HumanMessage, AIMessage, ToolMessage))])
+
         # 达到最大迭代 → 强制生成最终答案
         final = await self._generate_final_answer(messages)
         state.mark_done()
+        _save_trace(trace_id, goal, len(intermediate_steps), state.iterations,
+                    f"max_iterations ({self.max_iterations})",
+                    len(final), int((time.time() - trace_start) * 1000),
+                    trace_compressed, trace_total_msgs, 0, trace_steps)
         yield {
             "type": "done",
             "output": final,
             "steps": intermediate_steps,
             "stop_reason": f"max_iterations ({self.max_iterations})",
+            "trace_id": trace_id,
         }
+
+
+def _save_trace(
+    trace_id: str, question: str, total_steps: int, total_iterations: int,
+    stop_reason: str, final_answer_length: int, total_latency_ms: int,
+    context_compressed: int, context_total_messages: int,
+    go_quota_exhausted: int, steps: list[dict],
+) -> None:
+    try:
+        save_agent_trace(
+            trace_id=trace_id, question=question, total_steps=total_steps,
+            total_iterations=total_iterations, stop_reason=stop_reason,
+            final_answer_length=final_answer_length,
+            total_latency_ms=total_latency_ms,
+            context_compressed=context_compressed,
+            context_total_messages=context_total_messages,
+            go_quota_exhausted=go_quota_exhausted, steps=steps,
+        )
+    except Exception as e:
+        logger.error(f"[trace] 保存失败 {trace_id}: {e}")

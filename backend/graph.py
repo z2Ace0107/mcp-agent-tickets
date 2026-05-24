@@ -299,6 +299,7 @@ async def run_graph(
     circuit_state: dict[str, int] = {}
     output = ""
     steps: list[dict[str, Any]] = []
+    trace_id = ""
 
     async for event in agent.run(user_input, chat_history, circuit_state):
         if event["type"] == "quota_exhausted":
@@ -306,6 +307,7 @@ async def run_graph(
         if event["type"] == "done":
             output = event.get("output", "")
             steps = event.get("steps", [])
+            trace_id = event.get("trace_id", "")
         elif event["type"] == "error":
             output = event.get("message", "处理出错，请重试")
             break
@@ -320,6 +322,7 @@ async def run_graph(
         "intent": "",
         "rewritten_query": user_input,
         "context_info": None,
+        "trace_id": trace_id,
     }
 
 
@@ -343,6 +346,7 @@ async def run_graph_stream(
     circuit_state: dict[str, int] = {}
     steps: list[dict[str, Any]] = []
     output = ""
+    trace_id = ""
     current_node = "agent"
 
     if _go_quota_exhausted:
@@ -409,6 +413,7 @@ async def run_graph_stream(
 
         elif etype == "done":
             output = event.get("output", "")
+            trace_id = event.get("trace_id", "")
             if not steps:
                 steps = event.get("steps", [])
 
@@ -423,4 +428,5 @@ async def run_graph_stream(
         "intent": "",
         "rewritten_query": user_input,
         "elapsed": round(elapsed, 1),
+        "trace_id": trace_id,
     }
