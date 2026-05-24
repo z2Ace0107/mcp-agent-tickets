@@ -16,10 +16,15 @@ load_dotenv(PROJECT_ROOT / ".env")
 class Settings:
     """应用配置，所有值优先从环境变量读取，其次使用默认值。"""
 
-    # DeepSeek API（LLM 对话）
+    # DeepSeek API（LLM 对话，直连）
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+
+    # OpenCode Go API（优先使用，OpenAI 兼容代理）
+    GO_API_KEY: str = os.getenv("GO_API_KEY", "")
+    GO_BASE_URL: str = os.getenv("GO_BASE_URL", "https://opencode.ai/zen/go/v1")
+    GO_MODEL: str = os.getenv("GO_MODEL", "deepseek-v4-flash")
 
     # 百度 AI 搜索 API（联网搜索）
     BAIDU_API_KEY: str = os.getenv("BAIDU_API_KEY", "")

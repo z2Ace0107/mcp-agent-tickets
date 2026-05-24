@@ -311,6 +311,7 @@ class AgentLoop:
         execute_tool: Callable[[str, dict, dict], tuple[str, dict]],
         max_iterations: int = MAX_ITERATIONS,
         verbose: bool = False,
+        fallback_llm: Any = None,
     ):
         self.llm = llm
         self.tools = tools
@@ -318,6 +319,8 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.verbose = verbose
         self._tool_names = [t.name for t in tools]
+        self._fallback_llm = fallback_llm
+        self._llm_switched = False
 
     def _build_system_prompt(self, state: TaskState, observation_text: str, available_tool_names: list[str] | None = None) -> str:
         names = available_tool_names if available_tool_names is not None else self._tool_names
@@ -387,15 +390,35 @@ class AgentLoop:
 
         return messages
 
+    def _is_quota_error(self, error: Exception) -> bool:
+        error_msg = str(error).lower()
+        quota_keywords = ["429", "402", "quota", "limit", "exceeded",
+                          "insufficient", "rate limit", "too many requests"]
+        return any(kw in error_msg for kw in quota_keywords)
+
+    def _switch_to_fallback(self) -> bool:
+        if self._fallback_llm is not None and not self._llm_switched:
+            logger.warning("Go API 额度耗尽，切换到直连 DeepSeek API")
+            self.llm = self._fallback_llm
+            self._llm_switched = True
+            return True
+        return False
+
     async def _generate_final_answer(self, messages: list) -> str:
         """调 LLM（不带工具）生成最终答案。失败时回退到消息中提取。"""
         try:
             final_messages = list(messages)
-            # 裁剪过长的工具结果，避免上下文溢出
             final_messages = _compress_messages(final_messages, keep_recent=10)
             final_messages.append(SystemMessage(content=FINAL_ANSWER_PROMPT))
             final_llm = self.llm.bind_tools(self.tools, tool_choice="none")
-            response = await final_llm.ainvoke(final_messages)
+            try:
+                response = await final_llm.ainvoke(final_messages)
+            except Exception as e:
+                if self._is_quota_error(e) and self._switch_to_fallback():
+                    final_llm = self.llm.bind_tools(self.tools, tool_choice="none")
+                    response = await final_llm.ainvoke(final_messages)
+                else:
+                    raise
             if response.content and response.content.strip():
                 return response.content.strip()
         except Exception as e:
@@ -462,9 +485,14 @@ class AgentLoop:
             try:
                 response = await llm_with_tools.ainvoke(prompt_messages)
             except Exception as e:
-                logger.error(f"LLM 调用失败: {e}")
-                yield {"type": "error", "message": f"LLM 调用失败: {str(e)}"}
-                return
+                if self._is_quota_error(e) and self._switch_to_fallback():
+                    yield {"type": "progress", "label": "Go API 额度已用完，已自动切换到直连 DeepSeek API"}
+                    llm_with_tools = self.llm.bind_tools(available_tools)
+                    response = await llm_with_tools.ainvoke(prompt_messages)
+                else:
+                    logger.error(f"LLM 调用失败: {e}")
+                    yield {"type": "error", "message": f"LLM 调用失败: {str(e)}"}
+                    return
 
             _last_response = response
 

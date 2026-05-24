@@ -170,15 +170,30 @@ CIRCUIT_BREAKER_THRESHOLD = 3
 RETRY_BACKOFFS = [0.2, 0.4, 0.8]
 
 
-def _create_llm(temperature: float | None = None) -> ChatOpenAI:
+def _create_llm(
+    provider: str = "go",
+    temperature: float | None = None,
+    streaming: bool = True,
+) -> ChatOpenAI:
+    """创建 LLM 实例。provider: go（OpenCode Go 代理）或 direct（DeepSeek 直连）。"""
     settings = get_settings()
+    if provider == "go" and settings.GO_API_KEY:
+        return ChatOpenAI(
+            model=settings.GO_MODEL,
+            api_key=settings.GO_API_KEY,
+            base_url=settings.GO_BASE_URL,
+            temperature=temperature if temperature is not None else settings.LLM_TEMPERATURE,
+            max_tokens=settings.LLM_MAX_TOKENS,
+            streaming=streaming,
+            extra_body={"thinking": {"type": "disabled"}},
+        )
     return ChatOpenAI(
         model=settings.DEEPSEEK_MODEL,
         api_key=settings.DEEPSEEK_API_KEY,
         base_url=settings.DEEPSEEK_BASE_URL,
         temperature=temperature if temperature is not None else settings.LLM_TEMPERATURE,
         max_tokens=settings.LLM_MAX_TOKENS,
-        streaming=True,
+        streaming=streaming,
         extra_body={"thinking": {"type": "disabled"}},
     )
 
@@ -267,8 +282,10 @@ async def run_graph(
     settings = get_settings()
     verbose = settings.LOG_LEVEL.upper() == "DEBUG"
 
-    llm = _create_llm()
-    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool, verbose=verbose)
+    llm = _create_llm(provider="go")
+    fallback_llm = _create_llm(provider="direct") if settings.GO_API_KEY else None
+    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool,
+                      verbose=verbose, fallback_llm=fallback_llm)
 
     start_time = time.time()
     circuit_state: dict[str, int] = {}
@@ -306,8 +323,10 @@ async def run_graph_stream(
     settings = get_settings()
     verbose = settings.LOG_LEVEL.upper() == "DEBUG"
 
-    llm = _create_llm()
-    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool, verbose=verbose)
+    llm = _create_llm(provider="go")
+    fallback_llm = _create_llm(provider="direct") if settings.GO_API_KEY else None
+    agent = AgentLoop(llm=llm, tools=ALL_TOOLS, execute_tool=_execute_single_tool,
+                      verbose=verbose, fallback_llm=fallback_llm)
 
     start_time = time.time()
     circuit_state: dict[str, int] = {}
