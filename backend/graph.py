@@ -170,6 +170,13 @@ CIRCUIT_BREAKER_THRESHOLD = 3
 RETRY_BACKOFFS = [0.2, 0.4, 0.8]
 
 
+# ============================================================
+# LLM 工厂
+# ============================================================
+
+_go_quota_exhausted = False
+
+
 def _create_llm(
     provider: str = "go",
     temperature: float | None = None,
@@ -177,7 +184,7 @@ def _create_llm(
 ) -> ChatOpenAI:
     """创建 LLM 实例。provider: go（OpenCode Go 代理）或 direct（DeepSeek 直连）。"""
     settings = get_settings()
-    if provider == "go" and settings.GO_API_KEY:
+    if provider == "go" and settings.GO_API_KEY and not _go_quota_exhausted:
         return ChatOpenAI(
             model=settings.GO_MODEL,
             api_key=settings.GO_API_KEY,
@@ -277,6 +284,7 @@ async def run_graph(
     chat_history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """v5.0: AgentLoop 自循环运行，返回最终结果。"""
+    global _go_quota_exhausted
     logger.info(f"[graph] 开始: '{user_input[:60]}...'")
 
     settings = get_settings()
@@ -293,6 +301,8 @@ async def run_graph(
     steps: list[dict[str, Any]] = []
 
     async for event in agent.run(user_input, chat_history, circuit_state):
+        if event["type"] == "quota_exhausted":
+            _go_quota_exhausted = True
         if event["type"] == "done":
             output = event.get("output", "")
             steps = event.get("steps", [])
@@ -318,6 +328,7 @@ async def run_graph_stream(
     chat_history: list[dict[str, str]] | None = None,
 ):
     """v5.0: AgentLoop 流式运行，转发事件给前端。"""
+    global _go_quota_exhausted
     logger.info(f"[graph:stream] 开始: '{user_input[:60]}...'")
 
     settings = get_settings()
@@ -334,10 +345,27 @@ async def run_graph_stream(
     output = ""
     current_node = "agent"
 
+    if _go_quota_exhausted:
+        yield {
+            "type": "progress",
+            "node": "agent",
+            "label": "OpenCode Go 额度已用完，已自动切换到直连 DeepSeek API",
+            "steps": [],
+            "route": "",
+            "intent": "",
+        }
+
     async for event in agent.run(user_input, chat_history, circuit_state):
         etype = event["type"]
 
-        if etype == "plan":
+        if etype == "quota_exhausted":
+            _go_quota_exhausted = True
+            yield {
+                "type": "quota_exhausted",
+                "message": event.get("message", ""),
+            }
+
+        elif etype == "plan":
             yield {
                 "type": "progress",
                 "node": "agent",
