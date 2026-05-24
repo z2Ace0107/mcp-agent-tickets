@@ -256,7 +256,7 @@ def print_report(report: dict):
     s = report["summary"]
 
     print("\n" + "\u2550" * 60)
-    print(f"  LineMind v5.1 \u8bc4\u6d4b  {m['total_tests']}\u9898 \u23f1{s['elapsed_seconds']}s "
+    print(f"  LineMind v5.1 \u8bc4\u6d4b  {m['total_tests']}\u9898 \u23f1{m['elapsed_seconds']}s "
           f"\u2728{s['crashes']} crash")
     print("\u2550" * 60)
     print(f"  \u5fc5\u8981\u5de5\u5177\u8986\u76d6\u7387   {s['required_tool_pass']}")
