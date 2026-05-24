@@ -1087,6 +1087,9 @@ def _create_stream(user_input: str, chat_history_raw: list):
                 elif value["type"] == "token":
                     has_tokens = True
                     yield value["content"]
+                elif value["type"] == "quota_exhausted":
+                    has_tokens = True
+                    yield f"\n\n> ⚠️ **{value['message']}**\n\n"
                 elif value["type"] == "done":
                     metadata["output"] = value["output"]
                     metadata["steps"] = value["intermediate_steps"]

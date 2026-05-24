@@ -414,11 +414,10 @@ class AgentLoop:
             try:
                 response = await final_llm.ainvoke(final_messages)
             except Exception as e:
-                if self._is_quota_error(e) and self._switch_to_fallback():
-                    final_llm = self.llm.bind_tools(self.tools, tool_choice="none")
-                    response = await final_llm.ainvoke(final_messages)
-                else:
+                if self._is_quota_error(e):
+                    logger.warning(f"Go API 额度耗尽 (final): {e}")
                     raise
+                raise
             if response.content and response.content.strip():
                 return response.content.strip()
         except Exception as e:
@@ -485,14 +484,16 @@ class AgentLoop:
             try:
                 response = await llm_with_tools.ainvoke(prompt_messages)
             except Exception as e:
-                if self._is_quota_error(e) and self._switch_to_fallback():
-                    yield {"type": "progress", "label": "Go API 额度已用完，已自动切换到直连 DeepSeek API"}
-                    llm_with_tools = self.llm.bind_tools(available_tools)
-                    response = await llm_with_tools.ainvoke(prompt_messages)
-                else:
-                    logger.error(f"LLM 调用失败: {e}")
-                    yield {"type": "error", "message": f"LLM 调用失败: {str(e)}"}
+                if self._is_quota_error(e):
+                    logger.warning(f"Go API 额度耗尽: {e}")
+                    yield {
+                        "type": "quota_exhausted",
+                        "message": "OpenCode Go API 额度已用完，请联系管理员切换到直连 DeepSeek API 后再试。"
+                    }
                     return
+                logger.error(f"LLM 调用失败: {e}")
+                yield {"type": "error", "message": f"LLM 调用失败: {str(e)}"}
+                return
 
             _last_response = response
 
