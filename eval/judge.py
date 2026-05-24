@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""v5.0 LineMind 评测脚本 — 全客观指标，零 LLM 消耗
+"""v5.1 LineMind 评测 — 全客观指标 + 任务完成度
 
 指标：
-- 路由准确率：Supervisor 是否正确分类
-- 工具 Jaccard：工具选择与预期的交集/并集比（0-1）
+- 必要工具覆盖率：required_tools 被调用占比（0-1）
 - 工具执行成功率：调用是否返回 error 或触发降级
-- 效率：平均步数 + 工具调用次数 + 单题耗时
+- 步数分布：min_steps/max_steps 范围内占比
+- 任务完成度：综合评分（必要工具 + 步数 + 无错误）
 - 崩溃率
 """
+from __future__ import annotations
 
 import json
 import sys
@@ -28,16 +29,6 @@ from backend import init_app
 from backend.config import get_settings
 
 
-# ═══════════════════════════════════════════════════════════════
-# 指标函数
-# ═══════════════════════════════════════════════════════════════
-
-AGENT_MAP = {
-    "query": "query_agent", "analyze": "analyze_agent",
-    "knowledge": "knowledge_agent", "chat": "END",
-}
-
-
 def load_test_queries(path: str | None = None) -> list[dict]:
     if path is None:
         path = os.path.join(os.path.dirname(__file__), "test_queries.json")
@@ -45,17 +36,7 @@ def load_test_queries(path: str | None = None) -> list[dict]:
         return json.load(f)
 
 
-def jaccard(a: set, b: set) -> float:
-    """Jaccard 相似系数。0=无重叠，1=完全一致。"""
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
-
 def tool_exec_success(steps: list[dict]) -> tuple[int, int]:
-    """统计工具调用成功率。"""
     calls = [s for s in steps if s.get("action")]
     if not calls:
         return 0, 0
@@ -65,49 +46,64 @@ def tool_exec_success(steps: list[dict]) -> tuple[int, int]:
     return len(calls), ok
 
 
-def score_result(test: dict, steps: list[dict], route: str, intent: str) -> dict:
-    """单题评分——全客观。"""
+def score_result(test: dict, steps: list[dict]) -> dict:
     used = [s.get("action", "") for s in steps]
-    expected = test.get("expected_tools", [])
-    expected_agent = test.get("expected_agent", "")
-    expected_route = AGENT_MAP.get(expected_agent, "?")
+    used_set = set(used)
+    required = test.get("required_tools", [])
+    optional = test.get("optional_tools", [])
+    min_steps = test.get("min_steps", 0)
+    max_steps = test.get("max_steps", 99)
 
-    # 路由
-    route_ok = (route == expected_route) if route else (
-        (AGENT_MAP.get(intent, "") == expected_route) if intent else False)
+    required_set = set(required)
+    allowed_set = required_set | set(optional)
 
-    # 工具 Jaccard
-    jac = jaccard(set(expected), set(used))
+    required_covered = len(required_set & used_set) / len(required_set) if required_set else 1.0
+    suspicious = [t for t in used_set if t not in allowed_set and t]
 
-    # 工具执行成功率
+    step_count = len(steps)
+    steps_in_range = min_steps <= step_count <= max_steps
+
     tc, ok = tool_exec_success(steps)
 
-    # 错误收集
+    completion_score = 0.0
+    if required_covered >= 1.0:
+        completion_score += 0.4
+    if steps_in_range:
+        completion_score += 0.3
+    if ok == tc and tc > 0:
+        completion_score += 0.3
+    elif tc == 0 and len(required) == 0:
+        completion_score += 0.3
+
     errors = [s.get("action", "?") for s in steps
               if s.get("degraded") or '"error"' in str(s.get("observation", "")).lower()]
 
     return {
-        "test_id": test["id"], "question": test["question"],
-        "category": test["category"], "difficulty": test["difficulty"],
-        "route_correct": route_ok,
-        "route_expected": expected_route, "route_actual": route or intent or "N/A",
-        "tool_jaccard": round(jac, 2),
-        "tool_pass": jac >= 0.5,
-        "tools_used": used, "tools_expected": expected,
-        "tool_calls_total": tc, "tool_calls_ok": ok,
-        "steps_count": len(steps),
+        "test_id": test["id"],
+        "question": test["question"],
+        "category": test["category"],
+        "difficulty": test["difficulty"],
+        "required_coverage": round(required_covered, 2),
+        "required_pass": required_covered >= 1.0,
+        "suspicious_tools": suspicious,
+        "steps_in_range": steps_in_range,
+        "min_steps": min_steps,
+        "max_steps": max_steps,
+        "task_completion": round(completion_score, 2),
+        "tools_used": used,
+        "tools_required": required,
+        "tools_optional": optional,
+        "tool_calls_total": tc,
+        "tool_calls_ok": ok,
+        "steps_count": step_count,
         "errors": errors,
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-# 批量评测
-# ═══════════════════════════════════════════════════════════════
-
 async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dict:
     settings = get_settings()
     if not settings.DEEPSEEK_API_KEY:
-        print("❌ 未配置 DEEPSEEK_API_KEY")
+        print("\u274c 未配置 DEEPSEEK_API_KEY")
         return {"error": "no api key"}
 
     init_app()
@@ -131,29 +127,35 @@ async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dic
             result = await run_agent(user_input=question)
             elapsed_ms = round((time.perf_counter() - t0) * 1000)
             steps = result.get("intermediate_steps", [])
-            route = result.get("route", "")
-            intent = result.get("intent", "")
 
-            score = score_result(test, steps, route, intent)
+            score = score_result(test, steps)
             score["elapsed_ms"] = elapsed_ms
             results.append(score)
 
-            status = "PASS" if score["route_correct"] and score["tool_pass"] else (
-                "WARN" if score["route_correct"] or score["tool_pass"] else "FAIL")
-            print(f"{status} route={'OK' if score['route_correct'] else 'X'} "
-                  f"jac={score['tool_jaccard']:.2f} "
-                  f"exec={score['tool_calls_ok']}/{score['tool_calls_total']} "
-                  f"steps={score['steps_count']}")
+            status = "PASS" if score["required_pass"] else "WARN"
+            print(f"{status} cover={score['required_coverage']:.2f} "
+                  f"steps={score['steps_count']}/{score['min_steps']}-{score['max_steps']} "
+                  f"comp={score['task_completion']:.2f} "
+                  f"exec={score['tool_calls_ok']}/{score['tool_calls_total']}")
         except Exception as e:
             print(f"CRASH: {str(e)[:80]}")
             results.append({
-                "test_id": qid, "question": question,
-                "category": test["category"], "difficulty": test["difficulty"],
-                "route_correct": False, "route_expected": "?",
-                "route_actual": "CRASH",
-                "tool_jaccard": 0.0, "tool_pass": False,
-                "tools_used": [], "tools_expected": test.get("expected_tools", []),
-                "tool_calls_total": 0, "tool_calls_ok": 0,
+                "test_id": qid,
+                "question": question,
+                "category": test["category"],
+                "difficulty": test["difficulty"],
+                "required_coverage": 0.0,
+                "required_pass": False,
+                "suspicious_tools": [],
+                "steps_in_range": False,
+                "min_steps": test.get("min_steps", 0),
+                "max_steps": test.get("max_steps", 0),
+                "task_completion": 0.0,
+                "tools_used": [],
+                "tools_required": test.get("required_tools", []),
+                "tools_optional": test.get("optional_tools", []),
+                "tool_calls_total": 0,
+                "tool_calls_ok": 0,
                 "steps_count": 0,
                 "errors": [str(e)[:200]],
                 "crash": True,
@@ -161,41 +163,51 @@ async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dic
 
     elapsed = time.time() - start_time
 
-    # ── 汇总 ──
     crashes = sum(1 for r in results if r.get("crash"))
     valid = [r for r in results if not r.get("crash")]
     n = len(valid) or 1
 
-    route_ok = sum(r["route_correct"] for r in valid)
-    tool_pass = sum(r["tool_pass"] for r in valid)
-    jac_avg = sum(r["tool_jaccard"] for r in valid) / n
+    required_ok = sum(r["required_pass"] for r in valid)
+    comp_avg = sum(r["task_completion"] for r in valid) / n
+    in_range_count = sum(r["steps_in_range"] for r in valid)
     step_avg = sum(r["steps_count"] for r in valid) / n
     ms_avg = sum(r.get("elapsed_ms", 0) for r in valid) / n
     tc = sum(r["tool_calls_total"] for r in valid)
     to = sum(r["tool_calls_ok"] for r in valid)
     errs = sum(len(r.get("errors", [])) for r in valid)
+    suspicious_total = sum(len(r.get("suspicious_tools", [])) for r in valid)
 
-    # 按类别
+    step_dist = {"0": 0, "1-2": 0, "3-5": 0, "6+": 0}
+    for r in valid:
+        sc = r["steps_count"]
+        if sc == 0:
+            step_dist["0"] += 1
+        elif sc <= 2:
+            step_dist["1-2"] += 1
+        elif sc <= 5:
+            step_dist["3-5"] += 1
+        else:
+            step_dist["6+"] += 1
+
     by_cat = {}
     for r in valid:
         c = r["category"]
         if c not in by_cat:
-            by_cat[c] = {"n": 0, "route": 0, "tp": 0, "jac": 0.0, "ms": 0}
+            by_cat[c] = {"n": 0, "rp": 0, "comp": 0.0, "step": 0.0, "ms": 0.0}
         by_cat[c]["n"] += 1
-        by_cat[c]["route"] += r["route_correct"]
-        by_cat[c]["tp"] += r["tool_pass"]
-        by_cat[c]["jac"] += r["tool_jaccard"]
+        by_cat[c]["rp"] += r["required_pass"]
+        by_cat[c]["comp"] += r["task_completion"]
+        by_cat[c]["step"] += r["steps_count"]
         by_cat[c]["ms"] += r.get("elapsed_ms", 0)
 
-    # 按难度
     by_diff = {}
     for r in valid:
         d = r["difficulty"]
         if d not in by_diff:
-            by_diff[d] = {"n": 0, "route": 0, "tp": 0}
+            by_diff[d] = {"n": 0, "rp": 0, "comp": 0.0}
         by_diff[d]["n"] += 1
-        by_diff[d]["route"] += r["route_correct"]
-        by_diff[d]["tp"] += r["tool_pass"]
+        by_diff[d]["rp"] += r["required_pass"]
+        by_diff[d]["comp"] += r["task_completion"]
 
     report = {
         "meta": {
@@ -205,21 +217,23 @@ async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dic
             "avg_seconds_per_test": round(elapsed / len(results), 1) if results else 0,
         },
         "summary": {
-            "route_accuracy": f"{route_ok}/{n} ({round(route_ok/n*100, 1)}%)",
-            "avg_tool_jaccard": round(jac_avg, 2),
-            "tool_pass_rate": f"{tool_pass}/{n} ({round(tool_pass/n*100, 1)}%)",
+            "required_tool_pass": f"{required_ok}/{n} ({round(required_ok/n*100, 1)}%)",
+            "avg_task_completion": round(comp_avg, 2),
+            "steps_in_range": f"{in_range_count}/{n} ({round(in_range_count/n*100, 1)}%)",
             "tool_exec_success": f"{to}/{tc} ({round(to/tc*100, 1)}%)" if tc else "N/A",
             "avg_steps": round(step_avg, 1),
             "avg_ms_per_test": round(ms_avg, 0),
             "crashes": crashes,
-            "tool_errors_in_steps": errs,
+            "tool_errors": errs,
+            "suspicious_tool_calls": suspicious_total,
+            "step_distribution": step_dist,
         },
         "by_category": {
             c: {
                 "total": v["n"],
-                "route": f"{v['route']}/{v['n']} ({round(v['route']/v['n']*100, 1)}%)",
-                "tool_jaccard": round(v["jac"] / v["n"], 2),
-                "tool_pass": f"{v['tp']}/{v['n']} ({round(v['tp']/v['n']*100, 1)}%)",
+                "required_pass": f"{v['rp']}/{v['n']} ({round(v['rp']/v['n']*100, 1)}%)",
+                "avg_completion": round(v["comp"] / v["n"], 2),
+                "avg_steps": round(v["step"] / v["n"], 1),
                 "avg_ms": round(v["ms"] / v["n"], 0),
             }
             for c, v in sorted(by_cat.items())
@@ -227,8 +241,8 @@ async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dic
         "by_difficulty": {
             d: {
                 "total": v["n"],
-                "route": f"{v['route']}/{v['n']} ({round(v['route']/v['n']*100, 1)}%)",
-                "tool_pass": f"{v['tp']}/{v['n']} ({round(v['tp']/v['n']*100, 1)}%)",
+                "required_pass": f"{v['rp']}/{v['n']} ({round(v['rp']/v['n']*100, 1)}%)",
+                "avg_completion": round(v["comp"] / v["n"], 2),
             }
             for d, v in sorted(by_diff.items())
         },
@@ -237,55 +251,55 @@ async def run_eval(max_tests: int | None = None, seed: int | None = None) -> dic
     return report
 
 
-# ═══════════════════════════════════════════════════════════════
-# 报告输出
-# ═══════════════════════════════════════════════════════════════
-
 def print_report(report: dict):
     m = report["meta"]
     s = report["summary"]
 
-    print("\n" + "═" * 55)
-    print(f"  LineMind v5.0 评测  {m['total_tests']}题 ⏱{m['elapsed_seconds']}s "
-          f"💥{s['crashes']}")
-    print("═" * 55)
-    print(f"  路由准确率      {s['route_accuracy']}")
-    print(f"  工具 Jaccard    {s['avg_tool_jaccard']}  (1=完全匹配)")
-    print(f"  工具通过率      {s['tool_pass_rate']}  (Jaccard≥0.5)")
-    print(f"  工具执行成功率  {s['tool_exec_success']}")
-    print(f"  平均步数/耗时   {s['avg_steps']}步 / {s['avg_ms_per_test']}ms")
-    print(f"  工具异常        {s['tool_errors_in_steps']}")
+    print("\n" + "\u2550" * 60)
+    print(f"  LineMind v5.1 \u8bc4\u6d4b  {m['total_tests']}\u9898 \u23f1{s['elapsed_seconds']}s "
+          f"\u2728{s['crashes']} crash")
+    print("\u2550" * 60)
+    print(f"  \u5fc5\u8981\u5de5\u5177\u8986\u76d6\u7387   {s['required_tool_pass']}")
+    print(f"  \u4efb\u52a1\u5b8c\u6210\u5ea6       {s['avg_task_completion']}  (0-1, \u8d8a\u9ad8\u8d8a\u597d)")
+    print(f"  \u6b65\u6570\u8303\u56f4\u5185        {s['steps_in_range']}")
+    print(f"  \u5de5\u5177\u6267\u884c\u6210\u529f\u7387   {s['tool_exec_success']}")
+    print(f"  \u5e73\u5747\u6b65\u6570/\u8017\u65f6     {s['avg_steps']}\u6b65 / {s['avg_ms_per_test']}ms")
+    print(f"  \u5de5\u5177\u5f02\u5e38          {s['tool_errors']}")
+    print(f"  \u53ef\u7591\u5de5\u5177\u8c03\u7528      {s['suspicious_tool_calls']}")
+    print(f"  \u6b65\u6570\u5206\u5e03          0: {s['step_distribution']['0']}  "
+          f"1-2: {s['step_distribution']['1-2']}  "
+          f"3-5: {s['step_distribution']['3-5']}  "
+          f"6+: {s['step_distribution']['6+']}")
     print()
 
-    print(f"  {'类别':10s} {'题':>3s} {'路由':>10s} {'Jac':>6s} {'工具通过':>10s} {'耗时':>6s}")
-    print(f"  {'─'*10} {'─'*3} {'─'*10} {'─'*6} {'─'*10} {'─'*6}")
+    print(f"  {'\u7c7b\u522b':12s} {'\u9898':>3s} {'\u5fc5\u8981\u8986\u76d6':>10s} {'\u5b8c\u6210\u5ea6':>7s} {'\u6b65\u6570':>5s} {'\u8017\u65f6':>6s}")
+    print(f"  {'\u2500'*12} {'\u2500'*3} {'\u2500'*10} {'\u2500'*7} {'\u2500'*5} {'\u2500'*6}")
     for cat, v in report.get("by_category", {}).items():
-        print(f"  {cat:10s} {v['total']:3d}  {v['route']:10s} {v['tool_jaccard']:>5}  {v['tool_pass']:10s} {v['avg_ms']:>4}ms")
+        print(f"  {cat:12s} {v['total']:3d}  {v['required_pass']:10s} {v['avg_completion']:>6} {v['avg_steps']:>4} {v['avg_ms']:>5}ms")
     print()
 
     failed = [r for r in report["details"]
-              if not r.get("crash") and (not r["route_correct"] or not r["tool_pass"])]
+              if not r.get("crash") and (not r["required_pass"] or not r["steps_in_range"])]
     if failed:
-        print(f"  需关注 ({len(failed)} 题):")
+        print(f"  \u9700\u5173\u6ce8 ({len(failed)} \u9898):")
         for r in failed:
-            route = "OK" if r["route_correct"] else f"X(→{r.get('route_actual','?')}, want {r.get('route_expected','?')})"
-            tool = f"jac={r['tool_jaccard']:.2f} (used:{r['tools_used']} want:{r['tools_expected']})"
+            cover = f"cover={r['required_coverage']:.2f} (need:{r['tools_required']} used:{r['tools_used']})"
+            step_info = f"steps={r['steps_count']}/{r['min_steps']}-{r['max_steps']}"
             print(f"  {r['test_id']} [{r['category']}/{r['difficulty']}] {r['question'][:45]}...")
-            print(f"    路由:{route}  工具:{tool}")
-    print("═" * 55)
+            print(f"     {cover}  {step_info}")
+            if r.get("suspicious_tools"):
+                print(f"     \u53ef\u7591\u5de5\u5177: {r['suspicious_tools']}")
 
+    print("\u2550" * 60)
 
-# ═══════════════════════════════════════════════════════════════
-# 入口
-# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="LineMind 评测（全客观，零 LLM 消耗）")
-    parser.add_argument("-n", "--count", type=int, default=None, help="测试数量（默认全部 50 题）")
-    parser.add_argument("-o", "--output", type=str, default=None, help="JSON 报告输出路径")
-    parser.add_argument("--seed", type=int, default=None, help="随机种子（固定抽样，结果可复现）")
+    parser = argparse.ArgumentParser(description="LineMind v5.1 \u8bc4\u6d4b")
+    parser.add_argument("-n", "--count", type=int, default=None, help="\u6d4b\u8bd5\u6570\u91cf\uff08\u9ed8\u8ba4\u5168\u90e8 50 \u9898\uff09")
+    parser.add_argument("-o", "--output", type=str, default=None, help="JSON \u62a5\u544a\u8f93\u51fa\u8def\u5f84")
+    parser.add_argument("--seed", type=int, default=None, help="\u968f\u673a\u79cd\u5b50")
     args = parser.parse_args()
 
     report = asyncio.run(run_eval(max_tests=args.count, seed=args.seed))
@@ -294,4 +308,4 @@ if __name__ == "__main__":
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"\n报告已保存: {args.output}")
+        print(f"\n\u62a5\u544a\u5df2\u4fdd\u5b58: {args.output}")

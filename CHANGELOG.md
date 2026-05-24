@@ -28,10 +28,16 @@
 - **AGENT_PROMPT 强化**: 铁则新增 2 条（每轮上限 + 只调可用工具），效率规则提升为铁则
 - **删除**: 旧 `once_only_tools` 硬编码集合，替换为 `TOOL_CALL_LIMITS` 字典
 
+### Phase 4: 评测重写 ✅ (2026-05-24)
+- **test_queries.json**: 50 题 → 54 题（A 单步直达 15 + B 多步推理 20 + C 动态决策 15 + D 闲聊 4）
+- **新字段**: `expected_tools` → `required_tools` + `optional_tools` 双列表 + `min_steps`/`max_steps`
+- **judge.py**: 删除路由准确率指标 + 新增必要工具覆盖率 / 步数分布 / 任务完成度
+- **expected_agent**: 删除（不再有 Supervisor 路由）
+- **步数分布**: 0 / 1-2 / 3-5 / 6+ 分段统计
+
 ### 计划
-- **Phase 4**: 评测重写（50 题：A 15 / B 20 / C 15）
 - **Phase 5**: 前端优化（回答消失 + ReAct 美化）
-- **Phase 6**: 文档更新 + 全量回归
+- **Phase 6**: 文档 + 全量回归
 
 ---
 
