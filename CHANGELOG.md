@@ -4,40 +4,54 @@
 
 ---
 
-## v5.1 (进行中 — 2026-05-21)
+## v5.1 (完成 — 2026-05-24)
 
 ### Phase 1: 数据 & 环境扩展 ✅
-- **种子数据**: 33→61 条工单（含 6 根因链 + 8 跨部门联动 + 5 模糊描述 + 4 方案对比）
+- **种子数据**: 33→67 条工单（含 6 根因链 + 8 跨部门联动 + 5 模糊描述 + 4 方案对比）
 - **知识库**: 5 设备手册 + 6 SOP 检查清单 + 22 条巡检记录
 - **新工具**: `search_equipment_manual`, `query_inspection_records`
 - **TOOL_CN_MAP**: 14 工具中文名映射
-- **plotly 依赖**添加
-- **思考过程持久化**: 流式显示 → rerun 后折叠到 expander
 
-### Phase 2: Context Engine ✅ (2026-05-23)
+### Phase 2: Context Engine ✅
 - **_assemble_context**: 三层消息组装（History Digest + 轮次边界压缩 + Current Turn）
 - **_compact_tool_results**: 回合内工具结果压缩，超预算时替换最早 ToolMessage
 - **参数**: `HISTORY_COMPRESS_THRESHOLD=600`, `HISTORY_KEEP_CHARS=300`, `CONTEXT_BUDGET=12000`
-- **跨问题上下文污染修复**: 历史长回复截取 + [已压缩] 标记，边界 SystemMessage 分隔
 
-### Phase 3: Agent 稳定性 ✅ (2026-05-24)
-- **TOOL_CALL_LIMITS**: 工具调用分级限频表（8 个受限 + 6 个不限），按 PLAN.md 设计
-- **动态工具移除**: 工具达上限后从 `bind_tools()` + 系统提示中物理移除，LLM 无法看到/调用
-- **每轮工具上限**: `MAX_TOOLS_PER_ROUND=2`，单轮超限直接返回 blocked ToolMessage
-- **工具名验证**: 虚构工具名返回 "不存在 + 正确工具列表"，LLM 可自我纠正
-- **AGENT_PROMPT 强化**: 铁则新增 2 条（每轮上限 + 只调可用工具），效率规则提升为铁则
-- **删除**: 旧 `once_only_tools` 硬编码集合，替换为 `TOOL_CALL_LIMITS` 字典
+### Phase 3: Agent 稳定性 ✅
+- **TOOL_CALL_LIMITS**: 工具调用分级限频表（8 个受限 + 6 个不限）
+- **动态工具移除**: 工具达上限后从 `bind_tools()` 中物理移除
+- **每轮工具上限**: `MAX_TOOLS_PER_ROUND=2`
+- **工具名验证**: 虚构工具名返回 "不存在 + 可用列表"
+- **AGENT_PROMPT**: 7 铁则（含执行动作不犹豫）
 
-### Phase 4: 评测重写 ✅ (2026-05-24)
-- **test_queries.json**: 50 题 → 54 题（A 单步直达 15 + B 多步推理 20 + C 动态决策 15 + D 闲聊 4）
-- **新字段**: `expected_tools` → `required_tools` + `optional_tools` 双列表 + `min_steps`/`max_steps`
-- **judge.py**: 删除路由准确率指标 + 新增必要工具覆盖率 / 步数分布 / 任务完成度
-- **expected_agent**: 删除（不再有 Supervisor 路由）
-- **步数分布**: 0 / 1-2 / 3-5 / 6+ 分段统计
+### Phase 4: 评测重写 ✅
+- **54 题**: A 单步 15 / B 多步 20 / C 动态 15 / D 闲聊 4
+- **required_tools + optional_tools** 双列表 + min_steps/max_steps
+- **三维指标**: 必要工具覆盖率 + 任务完成度 + 步数分布
 
-### 计划
-- **Phase 5**: 前端优化（回答消失 + ReAct 美化）
-- **Phase 6**: 文档 + 全量回归
+### Agentic Tracing ✅
+- **自动记录**: 每次 run() 自动生成 trace_id 并保存到 SQLite
+- **agent_traces + agent_trace_steps** 两张表: 总览 + 细节
+- **trace_viewer.py**: CLI 列表/详情/统计三种模式
+
+### Go API 双通道 ✅
+- **GO_API_KEY**: OpenCode Go API 优先使用
+- **Direct Fallback**: 直连 DeepSeek API 备用
+- **配额耗尽**: 报告后下次请求自动切 Direct
+
+### 修复
+- **RAG Embedding batch**: DashScope 限制 10 条 → 分批索引，FTS5 回退恢复
+- **total_steps 硬编码**: agent_finished 路径从 0 改为实际 len(intermediate_steps)
+- **assign_ticket 不调用**: AGENT_PROMPT 新增铁则 7"执行动作不犹豫"
+
+### 评测结果
+| 指标 | 结果 |
+|------|------|
+| 必要工具覆盖率 | 48/54 (88.9%) |
+| 任务完成度 | 0.89 |
+| 工具执行成功率 | 160/160 (100%) |
+| 崩溃率 | 0/54 (0%) |
+| 已记录 Trace | 54 条 |
 
 ---
 
