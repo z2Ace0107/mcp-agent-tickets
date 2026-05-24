@@ -523,7 +523,7 @@ class AgentLoop:
                 state.mark_done()
                 if self.verbose:
                     logger.info(f"[StopDecision] LLM 未调用工具，任务完成 | 迭代: {state.iterations}")
-                _save_trace(trace_id, goal, 0, 0, "agent_finished",
+                _save_trace(trace_id, goal, len(intermediate_steps), state.iterations, "agent_finished",
                             len(response.content or ""), int((time.time() - trace_start) * 1000),
                             trace_compressed, trace_total_msgs, 0, trace_steps)
                 yield {
